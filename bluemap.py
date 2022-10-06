@@ -184,7 +184,6 @@ def RD_addPasswordForEntrepriseApp(appId):
             }
         },
         headers=headers)
-    print(addSecretPwd.json())
     if addSecretPwd.status_code == 200:
         pwdOwn = addSecretPwd.json()
         return "AppId: " + pwdOwn['keyId'] + "| Pwd: " + pwdOwn['secretText']
@@ -558,7 +557,6 @@ def attackWindow():
             EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Has Ownership?"]
             EntAppsRecordsCount = 0
             for EntAppsRecord in RD_AddAppSecret()['value']:
-                print(CHK_AppRegOwner(EntAppsRecord['appId']))
                 EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], CHK_AppRegOwner(EntAppsRecord['appId'])])
                 EntAppsRecordsCount += 1
             print(EntAppsRecords)
@@ -566,7 +564,7 @@ def attackWindow():
             print("Trying to enumerate all Enterprise applications (service principals)..")
             EntAppsRecords = PrettyTable()
             EntAppsRecords.align = "l"
-            EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "RoleAssignments","Can Abused?"]
+            EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Can Abused?"]
             EntAppsRecordsCount = 0
             for EntAppsRecord in RD_AddAppSecret()['value']:
                 print("Trying to register service principle for " + EntAppsRecord['displayName'] + " app..")
