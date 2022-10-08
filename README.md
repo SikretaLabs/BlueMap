@@ -1,4 +1,4 @@
-# BlueMap - Azure OpSec Framework
+# BlueMap - Azure Exploitation Toolkit
 
 # About BlueMap & Motivation
 
