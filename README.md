@@ -1,4 +1,4 @@
-# BlueMap
+# BlueMap - Azure OpSec Framework
 
 # About BlueMap & Motivation
 
