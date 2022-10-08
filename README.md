@@ -13,7 +13,7 @@ The tool is currently in the Alpha version and with initial capabilities, but it
 - Shadow Permissions Enumeration & IAM detailed scanner
 - Automation for Service Principles Exploit
 - App Service Attack surface detection
-- Token Converat automation for local/remote identities (i.e., Managed Identity)
+- Token Convert automation for local/remote identities (i.e., Managed Identity)
 - Ability to connect remote/local identities
 - ARM Template Quick Analysis
 
