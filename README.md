@@ -1,36 +1,23 @@
-# BlueMap - Azure Exploitation Toolkit
+### BlueMap: An Interactive Exploitation Toolkit for Azure
 
-# About BlueMap & Motivation
-
-BlueMap helps cloud red teamers and security researchers identify IAM misconfigurations, information gathering, and abuse of managed identities in interactive mode without ANY third-party dependencies. No more painful installations on the customer's environment, No more need to custom the script to avoid SIEM detection!
-
-The tool leaves minimum traffic in the network logs so it can help during red team engagements from on-prem to the cloud. Developed in Python and implemented all Azure integrations from scratch with zero dependencies on Powershell stuff. The idea behind the tool is to let security researchers and red team members the ability to focus on more Opsec rather than DevOps stuff.
+BlueMap helps penetration testers and red teamers to perform Azure auditing, discovery & enumeration, and exploitation in interactive mode that saves complex opsec and overhead that usually exists in Azure penetration testing engagements.
 
 The tool is currently in the Alpha version and with initial capabilities, but it will evolve with time :)
 
-# Supported Capabilities
+### Motivation
 
-- Shadow Permissions Enumeration & IAM detailed scanner
-- Automation for Service Principles Exploit
-- App Service Attack surface detection
-- Token Convert automation for local/remote identities (i.e., Managed Identity)
-- Ability to connect remote/local identities
-- ARM Template Quick Analysis
+During cloud engagements, a red teamer and pentester need to use different tools (primarily based on Powershell), which require third-party dependencies such as Az Module and similar for practical exploitation.  BlueMap helps cloud red teamers and security researchers identify IAM misconfigurations, information gathering, and abuse of managed identities in interactive mode without ANY third-party dependencies. No more painful installations on the customer's environment. 
+Developed in Python and implemented all Azure integrations from scratch. The idea behind the tool is to let security researchers and red team members have the ability to focus on more Opsec to bring practical results.
 
-TodoList:
+### Installation
 
-- Add WhoAmI feature to show local UPN + Role
-- Run Command on VM
-- Add support to extract stored password / information from automation accounts
-- Add support in Managed Identity in Reader/ExposedAppServiceApps (need to login as Azure Admin and set one up)
-- Detect of azureprofile.json ("Save-AzContext" as logged in Azure admin)
-- Add support in Blob enumeration (Microbrust like)
-- Add support to enumerate all Azure Container Registry
-- Add capability of parsing token/convert (to Graph etc.)
-- Add Azure Function App Support
-- Add Option to Read Vault Secrets
-- Add Option to View FW rules
-- Added Support for Password Spray
-- Add Option to Support Enumerate Owner for Enterprise Apps Only
-- Add Global Administrator or Intune Administrator Privilege: Add new PowerShell script to enrolled Intune devices
-- Add Support of Reset Password Functionality
+The up-to-date release can be downloaded by cloning the master branch from here.
+   
+   git clone https://github.com/SikretaLabs/BlueMap.git
+
+BlueMap works out of the box with [Python](https://www.python.org/download/) version **3.x** and above on any platform.
+For more information about installtion and other setup, please refer our wiki.
+
+### License
+
+BlueMap is distributed under MIT License
