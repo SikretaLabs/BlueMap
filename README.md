@@ -1,6 +1,3 @@
-[![licence badge]][licence] 
-[licence badge]:https://img.shields.io/badge/license-New%20BSD-blue.svg
-
 ### BlueMap: An Interactive Exploitation Toolkit for Azure
 
 BlueMap helps penetration testers and red teamers to perform Azure auditing, discovery & enumeration, and exploitation in interactive mode that saves complex opsec and overhead that usually exists in Azure penetration testing engagements.
