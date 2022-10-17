@@ -1,4 +1,5 @@
 [![licence badge]][licence] 
+[licence badge]:https://img.shields.io/badge/license-New%20BSD-blue.svg
 
 ### BlueMap: An Interactive Exploitation Toolkit for Azure
 
