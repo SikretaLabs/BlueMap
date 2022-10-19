@@ -1,4 +1,4 @@
-![GitHub](https://img.shields.io/github/license/SikretaLabs/BlueMap)
+![GitHub](https://img.shields.io/github/license/SikretaLabs/BlueMap) [![Black Hat Arsenal](https://raw.githubusercontent.com/toolswatch/badges/master/arsenal/europe/2022.svg?sanitize=true)]
 
 ### BlueMap: An Interactive Exploitation Toolkit for Azure
 
