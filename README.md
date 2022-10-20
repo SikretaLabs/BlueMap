@@ -17,6 +17,10 @@ The up-to-date release can be downloaded by cloning the master branch from here.
 BlueMap works out of the box with [Python](https://www.python.org/download/) version **3.x** and above on any platform.
 For more information about installtion and other setup, please refer our wiki.
 
+### About Author
+
+Maor Tal (CISSP, OSCP, CSSK) is security researcher, threat hunter and red-teamer. His main intresets includes web penteration testing, cloud security and red team activities. He has extenstive experience working with wide range of customers in field of public, private, hi-tech and fintech companies for cloud and penteration testing. In 2019, he published his book ["Web Application Advanced Hacking"](https://webadvancedhacking.com/) by LeanPub. You can Contact him via [Linkedin](https://www.linkedin.com/in/maor-tal-06a7ba2a/) or [Twitter](https://twitter.com/th3location).
+
 ### License
 
 BlueMap is distributed under MIT License.
