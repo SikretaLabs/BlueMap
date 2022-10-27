@@ -1072,7 +1072,9 @@ def attackWindow():
         if checkCmdInital[0] not in supportedCommands:
             print("Not supported command. Supported commands: " + str(supportedCommands))
         else:
-            if mode == "whoami":
+            if mode == "run" and ExploitChoosen is None:
+                print("Use run command only within an exploit.")
+            elif mode == "whoami":
                 currentProfile()
             elif mode == "test":
                 x = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
