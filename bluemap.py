@@ -785,9 +785,159 @@ def canPermissionBeAbused(currentPermission):
     return False
 
 
+def shadownAccounts():
+    print("Checking all users within current subscription = " + str(TargetSubscription) + "...")
+    field_names2 = ["#", "UserName", "RoleName", "Permission/Scope", "Details"]
+    rows2 = []
+    print("Lookup for risky RoleAssignments...")
+    print("Lookup for risky RolePermissions...")
+    for UserRecord in RD_ListAllUsers()['value']:
+        token = urllib.parse.quote("assignedTo('"+UserRecord['id']+"')")
+        allPermRolesAssigns = GetAllRoleAssignmentsForSubscriptionFilterd(TargetSubscription, token)
+        allPermRolesAssignsRecordsCount = 0
+        for role in allPermRolesAssigns['value']:
+            currentRoleInformation = GetAllRoleDefinitionsUnderId(role['properties']['roleDefinitionId'])
+            currentRoleScope = role['properties']['scope']
+            currentRoleName = currentRoleInformation['properties']['roleName']
+            if canRoleBeAbused(currentRoleName) is not False:
+                rows2.append(
+                    {"#": allPermRolesAssignsRecordsCount, "UserName": UserRecord['userPrincipalName'],
+                     "RoleName": currentRoleName,
+                     "Permission/Scope": currentRoleScope,
+                     "Details": canRoleBeAbused(currentRoleName).split("|")[1]}
+                )
+            else:
+                continue
+            allPermRolesAssignsRecordsCount += 1
+        for rolePermission in allPermRolesAssigns['value']:
+            if len(rolePermission) < 1:
+                continue
+            currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(rolePermission['properties']['roleDefinitionId'])
+            currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
+            currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
+            for permission in currentRolePermissions:
+                if canPermissionBeAbused(permission) is not False:
+                    rows2.append(
+                        {"#": allPermRolesAssignsRecordsCount, "UserName": UserRecord['userPrincipalName'],"RoleName": currentRolePermissionName,
+                         "Permission/Scope": permission,
+                         "Details": canPermissionBeAbused(permission).split("|")[1]}
+                    )
+                else:
+                    continue
+                allPermRolesAssignsRecordsCount += 1
+    print(make_table(field_names2, rows2))
+    print("Completed.")
+def AutoRecon():
+    print("\nChecking for current SubscriptionId: " + str(TargetSubscription))
+    print("\n===== Checking Available Resources =====\n")
+    totalStorageAccounts = len(RD_ListAllStorageAccounts())
+    totalVMs = len(RD_ListAllVMs())
+    totalDeployments = len(RD_ListAllDeployments())
+    totalAppRegistrations = len(RD_AddAppSecret())
+    totalACRs = len(RD_ListAllACRs())
+    totalRubBooks = len(RD_ListRunBooksByAutomationAccounts())
+    print("Storage Account: " + str(totalStorageAccounts))
+    print("Virtual Machines: " + str(totalVMs))
+    print("Deployments: " + str(totalDeployments))
+    print("RunBooks: " + str(totalRubBooks))
+    print("App.Registration: " + str(totalAppRegistrations))
+    print("ACRs: " + str(totalACRs))
+
+    if hasVaultEnabled:
+        totalValuts = len(RD_ListAllVaults())
+        print("Vaults: " + str(totalValuts))
+
+    print("\n===== Checking Current User =====\n")
+
+    print("Logged as: ")
+    currentProfile()
+    currentScope()
+
+    print("\n===== Checking all attached subscriptions =====\n")
+
+    listSubs = ListSubscriptionsForToken()
+    field_names = ["#", "SubscriptionId", "displayName", "State", "Plan", "spendingLimit"]
+    rows = []
+    victims = {}
+    subRecordCount = 0
+    for subRecord in listSubs['value']:
+        victims[subRecordCount] = {"name": subRecord['displayName']}
+        rows.append(
+            {"#": subRecordCount, "SubscriptionId": subRecord['subscriptionId'],
+             "displayName": subRecord['displayName'], "State": subRecord['state'],
+             "Plan": subRecord['subscriptionPolicies']['quotaId'],
+             "spendingLimit": subRecord['subscriptionPolicies']['spendingLimit']}
+        )
+        subRecordCount += 1
+    print(make_table(field_names, rows))
+
+    print("\n===== Checking Current Subscription Permissions =====\n")
+
+    print("Checking all RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...")
+    allRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
+    field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
+    rows = []
+    allRolesAssignsRecordsCount = 0
+    for role in range(0, len(allRolesAssigns)):
+        resultAllRolesAssigns = allRolesAssigns
+        currentRoleInformation = GetAllRoleDefinitionsUnderId(
+            resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
+        currentRoleScope = resultAllRolesAssigns['value'][role]['properties']['scope']
+        currentRoleName = currentRoleInformation['properties']['roleName']
+        if canRoleBeAbused(currentRoleName) is not False:
+            rows.append(
+                {"#": allRolesAssignsRecordsCount,
+                 "RoleName": currentRoleName,
+                 "Scope": currentRoleScope,
+                 "Can Abused?": "Yes",
+                 "Details": canRoleBeAbused(currentRoleName).split("|")[1]}
+            )
+        else:
+            rows.append(
+                {"#": allRolesAssignsRecordsCount,
+                 "RoleName": currentRoleName,
+                 "Scope": currentRoleScope,
+                 "Can Abused?": "No",
+                 "Details": "N/A"}
+            )
+        allRolesAssignsRecordsCount += 1
+    print(make_table(field_names, rows))
+    print("\nChecking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
+    allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
+    field_names2 = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
+    rows2 = []
+    allPermRolesAssignsRecordsCount = 0
+    for rolePermission in range(0, len(allPermRolesAssigns)):
+        resultAllRolesAssigns = allPermRolesAssigns
+        currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(
+            resultAllRolesAssigns['value'][rolePermission]['properties']['roleDefinitionId'])
+        currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
+        currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
+        for permission in currentRolePermissions:
+            if canPermissionBeAbused(permission) is not False:
+                rows2.append(
+                    {"#": allPermRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
+                     "Permission Assigned": permission, "Can Abused?": "Yes",
+                     "Details": canPermissionBeAbused(permission).split("|")[1]}
+                )
+            else:
+                rows2.append(
+                    {"#": allPermRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
+                     "Permission Assigned": permission, "Can Abused?": "No",
+                     "Details": "N/A"}
+                )
+            allPermRolesAssignsRecordsCount += 1
+    print(make_table(field_names2, rows2))
+
+
 def GetAllRoleAssignmentsUnderSubscription(subscriptionId):
     global Token
     r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/providers/Microsoft.Authorization/roleAssignments?api-version=2015-07-01", Token)
+    return r['json']
+
+def GetAllRoleAssignmentsForSubscriptionFilterd(subscriptionId, filter):
+    global Token
+    r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/providers/Microsoft.Authorization/roleAssignments?api-version=2015-07-01&$filter="+filter, Token)
     return r['json']
 
 def RD_DumpRunBookContent(runbookGUID):
@@ -867,9 +1017,11 @@ def attackWindow():
         "get_target",
         "get_resources",
         "get_res",
+        "surface",
         "sts",
         "subs",
-        "iam_scan",
+        "autorecon",
+        "shadowacc",
         "privs",
         "perms",
         "exploits",
@@ -957,6 +1109,21 @@ def attackWindow():
                         TargetSubscription = argSub[1]
             elif "get_target" in mode:
                 print("Current Target SubscriptionId = " + str(TargetSubscription))
+            elif "autorecon" in mode:
+                if TargetSubscription == None:
+                    print("Use set_target to set a subscription to work on.")
+                else:
+                    AutoRecon()
+            elif "autorecon" in mode:
+                if TargetSubscription == None:
+                    print("Use set_target to set a subscription to work on.")
+                else:
+                    AutoRecon()
+            elif "shadowacc" in mode:
+                if TargetSubscription == None:
+                    print("Use set_target to set a subscription to work on.")
+                else:
+                    shadownAccounts()
             elif "iam_scan" in mode:
                 if TargetSubscription == None:
                     print("Use set_target to set a subscription to work on.")
