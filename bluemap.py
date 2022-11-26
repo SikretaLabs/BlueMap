@@ -1350,7 +1350,6 @@ def attackWindow():
     '''
     supportedCommands = [
         "version",
-        "test",
         "whoami",
         "scopes",
         "get_subs",
@@ -1421,8 +1420,6 @@ def attackWindow():
         else:
             if mode == "run" and ExploitChoosen is None:
                 print("Use run command only within an exploit.")
-            elif mode == "test":
-                print(RD_ListAllStorageAccounts())
             elif mode == "version":
                 print("Bluemap 1.0.0-Beta")
             elif mode == "whoami":
