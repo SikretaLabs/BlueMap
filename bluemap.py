@@ -482,12 +482,12 @@ def ReloadToken():
 '''     
 def CheckSubscriptionReqState():
     global Token
-    r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
-    if len(r['json']) == 0:
-        return r
-    else:
+    r = ListSubscriptionsForToken()
+    if len(r) == 0:
         ReloadToken()
-        r = sendGETRequest("https://management.azure.com/subscriptions/?api-version=2017-05-10", Token)
+        internal = ListSubscriptionsForToken()
+        return internal
+    else:
         return r
 
 '''
@@ -616,45 +616,46 @@ def getArmTempPerResGroup(subid,resgroup):
 def RD_ListExposedWebApps():
     global Token
     result = []
-    r = CheckSubscriptionReqState()
-    for sub in r['json']['value']:
-        for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Web/sites?api-version=2022-03-01", Token)
+    listSubs = CheckSubscriptionReqState()
+    for subRecord in listSubs['value']:
+        for res in getResGroup(subRecord['subscriptionId'])['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+subRecord['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Web/sites?api-version=2022-03-01", Token)
             if len(rsVM['json']) == 0:
-                return result
+                continue
             else:
                 for item in rsVM['json']['value']:
                     if 'identity' not in item:
                         item['identity'] = "N/A"
 
-                    item['subscriptionId'] = sub['subscriptionId']
+                    item['subscriptionId'] = subRecord['subscriptionId']
                     item['resourceGroup'] = res['name']
                     result.append(item)
-            return result
+    return result
 
 def RD_ListAllDeployments():
     global Token
     result = []
-    r = CheckSubscriptionReqState()
-    for sub in r['json']['value']:
-        rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub["subscriptionId"]+"/providers/Microsoft.Web/sites?api-version=2022-03-01", Token)
+    listSubs = CheckSubscriptionReqState()
+    for subRecord in listSubs['value']:
+        rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+subRecord["subscriptionId"]+"/providers/Microsoft.Web/sites?api-version=2022-03-01", Token)
         if len(rsVM['json']) == 0:
-            return result
+            continue
         else:
             for item in rsVM['json']['value']:
                 result.append(item)
-        return result
+    return result
 
 def RD_ListAllACRs():
     global Token
-    r = CheckSubscriptionReqState()
-    if len(r['json']) == 0:
-        return False
-    else:
-        for sub in r['json']['value']:
-            rsub = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.ContainerRegistry/registries?api-version=2019-05-01", Token)
-            return rsub['json']
-    return False
+    result = []
+    listSubs = CheckSubscriptionReqState()
+    for subRecord in listSubs['value']:
+        rsub = sendGETRequest("https://management.azure.com/subscriptions/"+subRecord['subscriptionId']+"/providers/Microsoft.ContainerRegistry/registries?api-version=2019-05-01", Token)
+        if len(rsub) == 0:
+            continue
+        else:
+            result.append(rsub['json'])
+    return result
 
 def HLP_GetACRCreds(acrId):
     global Token
@@ -741,31 +742,31 @@ def HLP_GetVMInstanceView(subscriptionId,resourceGroupName,vmName):
 def RD_ListAllVMs():
     global Token
     result = []
-    r = CheckSubscriptionReqState()
-    for sub in r['json']['value']:
-        for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", Token)
+    listSubs = CheckSubscriptionReqState()
+    for subRecord in listSubs['value']:
+        for res in getResGroup(subRecord['subscriptionId'])['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+subRecord['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Compute/virtualMachines?api-version=2022-08-01", Token)
             if len(rsVM['json']) == 0:
-                return result
+                continue
             else:
                 for item in rsVM['json']['value']:
                     if 'identity' not in item:
                         item['identity'] = "N/A"
 
-                    item['subscriptionId'] = sub['subscriptionId']
+                    item['subscriptionId'] = subRecord['subscriptionId']
                     item['resourceGroup'] = res['name']
                     result.append(item)
-            return result
+    return result
 
 def RD_ListAllVaults():
     global Token
     result = []
-    rs = CheckSubscriptionReqState()
-    for sub in rs['json']['value']:
-        for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.KeyVault/vaults?api-version=2021-10-01", Token)
+    listSubs = CheckSubscriptionReqState()
+    for subRecord in listSubs['value']:
+        for res in getResGroup(subRecord['subscriptionId'])['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+subRecord['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.KeyVault/vaults?api-version=2021-10-01", Token)
             for item in rsVM['json']['value']:
-                item['subscriptionId'] = sub['subscriptionId']
+                item['subscriptionId'] = subRecord['subscriptionId']
                 item['resourceGroup'] = res['name']
                 result.append(item)
     return result
@@ -778,16 +779,16 @@ def RD_ListAllStorageAccountsKeys(AccId):
 def RD_ListAllStorageAccounts():
     global Token
     result = []
-    r = CheckSubscriptionReqState()
-    for sub in r['json']['value']:
-        for res in getResGroup(sub['subscriptionId'])['value']:
-            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Storage/storageAccounts?api-version=2021-09-01", Token)
+    listSubs = CheckSubscriptionReqState()
+    for subRecord in listSubs['value']:
+        for res in getResGroup(subRecord['subscriptionId'])['value']:
+            rsVM = sendGETRequest("https://management.azure.com/subscriptions/"+subRecord['subscriptionId']+"/resourceGroups/"+res['name']+"/providers/Microsoft.Storage/storageAccounts?api-version=2021-09-01", Token)
             if len(rsVM['json']) == 0:
                 return result
             else:
                 for item in rsVM['json']['value']:
 
-                    item['subscriptionId'] = sub['subscriptionId']
+                    item['subscriptionId'] = subRecord['subscriptionId']
                     item['resourceGroup'] = res['name']
 
                     if 'allowSharedKeyAccess' not in item['properties']:
@@ -929,27 +930,27 @@ def RD_ListAutomationAccounts():
 def RD_ListRunBooksByAutomationAccounts():
     global Token
     result = []
-    r = CheckSubscriptionReqState()
-    for sub in r['json']['value']:
-        pathToAutomationAccount = sendGETRequest("https://management.azure.com/subscriptions/"+sub['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22", Token)
+    listSubs = CheckSubscriptionReqState()
+    for subRecord in listSubs['value']:
+        pathToAutomationAccount = sendGETRequest("https://management.azure.com/subscriptions/"+subRecord['subscriptionId']+"/providers/Microsoft.Automation/automationAccounts?api-version=2021-06-22", Token)
         if len(pathToAutomationAccount['json']) == 0:
-            return result
+            continue
         else:
             for automationAccount in pathToAutomationAccount['json']['value']:
                 GetRunBook = sendGETRequest("https://management.azure.com/" + str(automationAccount['id']) + "/runbooks?api-version=2019-06-01", Token)
                 for item in GetRunBook['json']['value']:
-                    item['subscriptionId'] = str(sub['subscriptionId'])
+                    item['subscriptionId'] = str(subRecord['subscriptionId'])
                     item['automationAccount'] = str(automationAccount['name'])
                     result.append(item)
-        return result
+    return result
 
 def RD_ListARMTemplates():
     global Token
     finalResult = []
-    rs = CheckSubscriptionReqState()
-    for sub in rs['json']['value']:
-        for res in getResGroup(sub['subscriptionId'])['value']:
-            for template in getArmTempPerResGroup(sub['subscriptionId'], res['name'])['value']:
+    listSubs = CheckSubscriptionReqState()
+    for subRecord in listSubs['value']:
+        for res in getResGroup(subRecord['subscriptionId'])['value']:
+            for template in getArmTempPerResGroup(subRecord['subscriptionId'], res['name'])['value']:
                 currenttemplate = template
                 currentdata = {'name': currenttemplate['name'], 'id': currenttemplate['id']}
                 if 'parameters' in currenttemplate['properties']:
@@ -1192,7 +1193,9 @@ def shadownAccounts():
     print("Completed.")
 
 def AutoRecon():
-    print("\nChecking for current SubscriptionId: " + str(TargetSubscription))
+
+    print("\nRunning Checks..")
+
     print("\n===== Checking Available Resources =====\n")
     print("Checking all Storage Accounts..")
     totalStorageAccounts = len(RD_ListAllStorageAccounts())
