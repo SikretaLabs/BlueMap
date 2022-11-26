@@ -372,8 +372,9 @@ def initRefreshGraphToken(TokenRFGraph):
     RefreshTokenGraph = TokenRFGraph
 
 def initTokenWithGraph(token, graphToken):
-    global Token, accessTokenGraph,TargetSubscription, TargetTenantId, hasGraphAccess, hasMgmtAccess
+    global Token, accessTokenGraph,TargetSubscription, hasVaultEnabled, TargetTenantId, hasGraphAccess, hasMgmtAccess
     hasGraphAccess = True
+    hasVaultEnabled = False
     hasMgmtAccess = True
     Token = token
     accessTokenGraph = graphToken
