@@ -893,7 +893,8 @@ def CON_VMRunCommand(subscriptionId, resourceGroupName, osType, vmName, Command)
             if x["status_code"] != 200:
                 continue
             else:
-                print(x["json"]["message"])
+                if 'message' in x["json"]:
+                    print(x["json"]["message"])
                 break
     else:
         return "Failed to Create Shell Script."
